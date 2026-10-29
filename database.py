@@ -85,6 +85,17 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_document ON facts(document_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_page_texts_document ON page_texts(document_id, page_number)")
 
+        # Seed MLH Judge demo account if not exists
+        cursor.execute("SELECT id FROM users WHERE username = 'mlh_judge'")
+        if not cursor.fetchone():
+            from werkzeug.security import generate_password_hash
+            from provenance import get_timestamp
+            cursor.execute(
+                """INSERT INTO users (username, password_hash, created_at)
+                   VALUES (?, ?, ?)""",
+                ('mlh_judge', generate_password_hash('Judge@Krishi2024'), get_timestamp())
+            )
+
         conn.commit()
     finally:
         conn.close()
