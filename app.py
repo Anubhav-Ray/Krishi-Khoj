@@ -4,15 +4,17 @@ Main Flask application.
 
 Every extracted fact carries full provenance:
   document name, SHA-256 hash, version, page number, extraction timestamp.
+Strict per-user ownership and privacy enforced across all routes, queries, and exports.
 """
 import os
 import csv
 import json
 import io
 import re
+from functools import wraps
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    flash, jsonify, send_file, Response, session
+    flash, jsonify, send_file, Response, session, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -45,10 +47,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = SESSION_COOKIE_SAMESITE
 app.config['SESSION_COOKIE_SECURE'] = SESSION_COOKIE_SECURE
 app.config['PERMANENT_SESSION_LIFETIME'] = PERMANENT_SESSION_LIFETIME
 
-# Ensure directories exist
+# Ensure base uploads directory exists
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Initialize database on startup
+# Initialize database and migrations on startup
 init_db()
 
 
@@ -65,6 +67,22 @@ def format_file_size(size_bytes):
         return f"{size_bytes / 1024:.1f} KB"
     else:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def login_required(f):
+    """
+    Decorator to require authentication on protected routes.
+    Redirects HTML requests to /login and returns 401 for /api/ routes.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('user_id'):
+            if request.path.startswith('/api/'):
+                return jsonify({'error': 'Unauthorized', 'message': 'Authentication required.'}), 401
+            flash('Please sign in to access Krishi Khoj.', 'warning')
+            return redirect(url_for('login', next=request.path))
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 # ─── Template Context & Filters ───────────────────────────────────────────────
@@ -91,6 +109,14 @@ def truncate_hash_filter(hash_str, length=8):
     if hash_str and len(hash_str) > length:
         return hash_str[:length] + '...'
     return hash_str
+
+
+@app.errorhandler(404)
+def handle_404(e):
+    """Safe 404 handler that does not reveal if another user's document exists."""
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Not found'}), 404
+    return render_template('404.html'), 404
 
 
 # ─── Routes: Authentication ───────────────────────────────────────────────────
@@ -191,40 +217,44 @@ def logout():
     return redirect(url_for('login'))
 
 
-# ─── Routes: Pages ───────────────────────────────────────────────────────────
+# ─── Routes: Protected Pages ──────────────────────────────────────────────────
 
 @app.route('/')
+@login_required
 def index():
-    """Home page with upload form and overview."""
-    stats = get_stats()
-    documents = get_all_documents()
+    """Home page with upload form and overview of the user's private documents."""
+    user_id = session['user_id']
+    stats = get_stats(user_id=user_id)
+    documents = get_all_documents(user_id=user_id)
     return render_template('index.html', stats=stats, documents=documents)
 
 
 @app.route('/search')
+@login_required
 def search_page():
-    """Search and filter facts."""
-    # Get filter parameters
+    """Search and filter facts within the logged-in user's private documents."""
+    user_id = session['user_id']
     query = request.args.get('q', '').strip()
     crop_filter = request.args.get('crop', '').strip()
     category_filter = request.args.get('category', '').strip()
     season_filter = request.args.get('season', '').strip()
     page = request.args.get('page', 1, type=int)
 
-    # Search with filters
+    # Search with user-scoped filters
     results = search_facts(
         query=query or None,
         crop=crop_filter or None,
         category=category_filter or None,
         season=season_filter or None,
         page=page,
-        per_page=20
+        per_page=20,
+        user_id=user_id
     )
 
-    # Get filter options
-    crops = get_distinct_values('crop_name')
-    categories = get_distinct_values('category')
-    seasons = get_distinct_values('season')
+    # Filter options scoped strictly to user's documents
+    crops = get_distinct_values('crop_name', user_id=user_id)
+    categories = get_distinct_values('category', user_id=user_id)
+    seasons = get_distinct_values('season', user_id=user_id)
 
     return render_template(
         'search.html',
@@ -244,19 +274,22 @@ def search_page():
 
 
 @app.route('/document/<int:document_id>')
+@login_required
 def document_detail(document_id):
-    """Document detail with page-by-page facts view."""
-    document = get_document_by_id(document_id)
+    """
+    Document detail view.
+    Enforces ownership: returns safe 404 if document does not belong to user.
+    """
+    user_id = session['user_id']
+    document = get_document_by_id(document_id, user_id=user_id)
     if not document:
-        flash('Document not found.', 'error')
-        return redirect(url_for('index'))
+        abort(404)
 
-    # Get all facts for this document, grouped by page
-    all_facts = get_document_facts(document_id)
+    all_facts = get_document_facts(document_id, user_id=user_id)
     pages_data = []
 
     for page_num in range(1, document['page_count'] + 1):
-        pt = get_page_text(document_id, page_num)
+        pt = get_page_text(document_id, page_num, user_id=user_id)
         page_facts = [f for f in all_facts if f['page_number'] == page_num]
         pages_data.append({
             'page_number': page_num,
@@ -264,7 +297,6 @@ def document_detail(document_id):
             'facts': page_facts
         })
 
-    # Generate summary
     summary = {
         'total_facts': len(all_facts),
         'by_category': {},
@@ -284,14 +316,18 @@ def document_detail(document_id):
 
 
 @app.route('/fact/<int:fact_id>')
+@login_required
 def fact_detail(fact_id):
-    """Single fact detail with full provenance and source context."""
-    fact = get_fact_by_id(fact_id)
+    """
+    Single fact detail view with provenance.
+    Enforces ownership: returns safe 404 if fact/document does not belong to user.
+    """
+    user_id = session['user_id']
+    fact = get_fact_by_id(fact_id, user_id=user_id)
     if not fact:
-        flash('Fact not found.', 'error')
-        return redirect(url_for('search_page'))
+        abort(404)
 
-    page_text = get_page_text(fact['document_id'], fact['page_number'])
+    page_text = get_page_text(fact['document_id'], fact['page_number'], user_id=user_id)
 
     return render_template(
         'fact_detail.html',
@@ -301,9 +337,11 @@ def fact_detail(fact_id):
 
 
 @app.route('/documents')
+@login_required
 def documents_list():
-    """List all uploaded documents."""
-    documents = get_all_documents()
+    """List all private uploaded documents belonging to the logged-in user."""
+    user_id = session['user_id']
+    documents = get_all_documents(user_id=user_id)
     total_facts = sum(d.get('fact_count', 0) for d in documents)
     return render_template(
         'documents.html',
@@ -312,11 +350,16 @@ def documents_list():
     )
 
 
-# ─── Routes: Actions ─────────────────────────────────────────────────────────
+# ─── Routes: Protected Actions ────────────────────────────────────────────────
 
 @app.route('/upload', methods=['POST'])
+@login_required
 def upload_pdf():
-    """Upload and process a farming PDF."""
+    """
+    Upload and process a farming PDF for the authenticated user.
+    Files are stored in user-isolated subfolders to guarantee private storage.
+    """
+    user_id = session['user_id']
     file = request.files.get('pdf_file') or request.files.get('file')
     if not file or not file.filename or file.filename.strip() == '':
         flash('No file selected. Please choose a PDF file to upload.', 'error')
@@ -326,16 +369,19 @@ def upload_pdf():
         flash('Only PDF files are allowed.', 'error')
         return redirect(url_for('index'))
 
-    # Save the file
-    filename = secure_filename(file.filename)
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    # User-isolated storage directory: uploads/user_<user_id>/
+    user_upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], f"user_{user_id}")
+    os.makedirs(user_upload_dir, exist_ok=True)
 
-    # Handle duplicate filenames
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(user_upload_dir, filename)
+
+    # Handle duplicate filenames within user's own storage
     counter = 1
     base, ext = os.path.splitext(filename)
     while os.path.exists(file_path):
         filename = f"{base}_{counter}{ext}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file_path = os.path.join(user_upload_dir, filename)
         counter += 1
 
     file.save(file_path)
@@ -346,24 +392,24 @@ def upload_pdf():
             doc_info = processor.get_document_info()
             pages = processor.extract_all_pages()
 
-        # Insert document into database
+        # Insert document scoped to user_id
         doc_result = insert_document(
             filename=doc_info['filename'],
             file_hash=doc_info['file_hash'],
             page_count=doc_info['page_count'],
             file_path=file_path,
-            file_size=doc_info['file_size']
+            file_size=doc_info['file_size'],
+            user_id=user_id
         )
 
         if doc_result['is_duplicate']:
-            os.remove(file_path)  # Remove duplicate file
+            os.remove(file_path)
             flash(
-                f'This document has already been uploaded (v{doc_result["version"]}). '
+                f'This document has already been uploaded to your private library (v{doc_result["version"]}). '
                 f'Duplicate detected via SHA-256 hash.',
                 'warning'
             )
-            return redirect(url_for('document_detail',
-                                    document_id=doc_result['id']))
+            return redirect(url_for('document_detail', document_id=doc_result['id']))
 
         document_id = doc_result['id']
 
@@ -391,7 +437,6 @@ def upload_pdf():
                 extraction_date=extraction_date
             )
 
-        # Get summary for flash message
         summary = get_extraction_summary(facts)
         flash(
             f'✅ Successfully extracted {summary["total_facts"]} facts from '
@@ -402,7 +447,6 @@ def upload_pdf():
         return redirect(url_for('document_detail', document_id=document_id))
 
     except Exception as e:
-        # Clean up on error
         if os.path.exists(file_path):
             os.remove(file_path)
         flash(f'Error processing PDF: {str(e)}', 'error')
@@ -410,39 +454,48 @@ def upload_pdf():
 
 
 @app.route('/document/<int:document_id>/delete', methods=['POST'])
+@login_required
 def delete_doc(document_id):
-    """Delete a document and all its facts."""
-    document = get_document_by_id(document_id)
-    if not document:
-        flash('Document not found.', 'error')
-        return redirect(url_for('index'))
+    """
+    Delete a document and all its facts.
+    Enforces ownership: returns safe 404 if document does not belong to user.
+    """
+    user_id = session['user_id']
+    deleted, file_path = delete_document(document_id, user_id=user_id)
+    if not deleted:
+        abort(404)
 
-    # Delete file from disk
-    if document.get('file_path') and os.path.exists(document['file_path']):
-        os.remove(document['file_path'])
+    # Delete file from disk if present
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
 
-    # Delete from database
-    delete_document(document_id)
-    flash(f'Document "{document["filename"]}" and all its facts deleted.', 'success')
-    return redirect(url_for('index'))
+    flash('Document and all its facts have been deleted from your private library.', 'success')
+    return redirect(url_for('documents_list'))
 
 
-# ─── Routes: API ──────────────────────────────────────────────────────────────
+# ─── Routes: Protected API ────────────────────────────────────────────────────
 
 @app.route('/api/autocomplete')
+@login_required
 def api_autocomplete():
-    """Autocomplete suggestions for search queries (single-word prefix or multi-word)."""
+    """Autocomplete suggestions scoped strictly to the authenticated user."""
+    user_id = session['user_id']
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({'query': query, 'suggestions': []})
 
-    suggestions = get_search_autocomplete(query, limit=8)
+    suggestions = get_search_autocomplete(query, user_id=user_id, limit=8)
     return jsonify({'query': query, 'suggestions': suggestions})
 
 
 @app.route('/api/search')
+@login_required
 def api_search():
-    """JSON API for searching facts."""
+    """JSON API for searching facts scoped strictly to the authenticated user."""
+    user_id = session['user_id']
     query = request.args.get('q', '').strip() or None
     crop = request.args.get('crop', '').strip() or None
     category = request.args.get('category', '').strip() or None
@@ -450,33 +503,38 @@ def api_search():
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
 
-    results = search_facts(query, crop, category, season, page=page, per_page=per_page)
+    results = search_facts(query, crop, category, season, page=page, per_page=per_page, user_id=user_id)
     return jsonify(results)
 
 
 @app.route('/api/stats')
+@login_required
 def api_stats():
-    """JSON API for dashboard statistics."""
-    return jsonify(get_stats())
+    """JSON API for dashboard statistics scoped strictly to the authenticated user."""
+    user_id = session['user_id']
+    return jsonify(get_stats(user_id=user_id))
 
 
 @app.route('/api/documents')
+@login_required
 def api_documents():
-    """JSON API for listing documents."""
-    return jsonify(get_all_documents())
+    """JSON API for listing documents belonging strictly to the authenticated user."""
+    user_id = session['user_id']
+    return jsonify(get_all_documents(user_id=user_id))
 
 
 @app.route('/api/export')
+@login_required
 def api_export():
-    """Export facts as CSV or JSON with optional filters."""
+    """Export facts as CSV or JSON scoped strictly to the authenticated user."""
+    user_id = session['user_id']
     fmt = request.args.get('format', 'csv').lower()
     query = request.args.get('q', '').strip() or None
     crop = request.args.get('crop', '').strip() or None
     category = request.args.get('category', '').strip() or None
     season = request.args.get('season', '').strip() or None
 
-    # Get all matching facts (no pagination for export)
-    results = search_facts(query, crop, category, season, page=1, per_page=10000)
+    results = search_facts(query, crop, category, season, page=1, per_page=10000, user_id=user_id)
     facts = results['facts']
 
     if fmt == 'json':
