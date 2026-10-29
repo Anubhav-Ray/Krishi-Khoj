@@ -16,6 +16,9 @@ Official farming advice is often locked inside PDF circulars, advisories, and pa
 
 ---
 
+## Live Link [Krishi Khoj Website](https://krishi-khoj.onrender.com)
+
+
 ## 🚀 How to Run the App
 
 ### Option 1: Quick Start (Single Command)
