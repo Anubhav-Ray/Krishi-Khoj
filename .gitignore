@@ -50,7 +50,18 @@ desktop.ini
 # Environment & secrets
 .env
 .env.*
+.env.local
 !.env.example
+
+# SQLite Database & runtime state
+*.db
+*.sqlite
+*.sqlite3
+krishi_khoj.db
+
+# User Uploaded PDFs (keep folder tracked via .gitkeep)
+uploads/*
+!uploads/.gitkeep
 
 # Temporary and log files
 *.log
