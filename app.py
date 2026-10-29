@@ -22,7 +22,8 @@ from database import (
     init_db, insert_document, insert_fact, insert_page_text,
     search_facts, get_fact_by_id, get_document_by_id,
     get_all_documents, get_page_text, get_stats,
-    get_distinct_values, delete_document, get_document_facts
+    get_distinct_values, delete_document, get_document_facts,
+    get_search_autocomplete
 )
 from pdf_processor import PDFProcessor
 from fact_extractor import extract_facts_from_document, get_extraction_summary
@@ -310,6 +311,17 @@ def delete_doc(document_id):
 
 
 # ─── Routes: API ──────────────────────────────────────────────────────────────
+
+@app.route('/api/autocomplete')
+def api_autocomplete():
+    """Autocomplete suggestions for search queries (single-word prefix or multi-word)."""
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'query': query, 'suggestions': []})
+
+    suggestions = get_search_autocomplete(query, limit=8)
+    return jsonify({'query': query, 'suggestions': suggestions})
+
 
 @app.route('/api/search')
 def api_search():

@@ -93,6 +93,7 @@ Upload either of these from the home page to immediately see facts categorized a
 
 ## 📡 API Endpoints
 
+- `GET /api/autocomplete?q=wheat+fert`: Smart search autocomplete (activates when typing 2+ words)
 - `GET /api/search?q=fertilizer&crop=Wheat&category=Fertilizer`: Search facts with filters
 - `GET /api/stats`: Dashboard counts (documents, facts, categories, crops)
 - `GET /api/documents`: List of documents with checksums & page counts

@@ -12,6 +12,8 @@ document.addEventListener('DOMContentLoaded', function() {
     initDeleteConfirm();
     initQuickSearch();
     initDetailHighlight();
+    initAutocomplete();
+    initSearchResultsHighlight();
 });
 
 // === Drag & Drop Upload ===
@@ -239,5 +241,331 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// === Autocomplete for Search Inputs (activates on 2 or more words) ===
+function initAutocomplete() {
+    const searchInputs = document.querySelectorAll('input[name="q"]');
+    if (!searchInputs.length) return;
+
+    searchInputs.forEach(input => {
+        // Disable native browser autocomplete to prevent menu overlap
+        input.setAttribute('autocomplete', 'off');
+
+        const container = input.closest('.search-bar-container') || input.parentElement;
+        if (!container) return;
+
+        if (window.getComputedStyle(container).position === 'static') {
+            container.style.position = 'relative';
+        }
+
+        // Locate or create in-search-bar elements
+        const ghostTyped = container.querySelector('.ghost-typed');
+        const ghostSuffix = container.querySelector('.ghost-suffix');
+        const tabPill = container.querySelector('.search-tab-pill');
+        const datalistId = input.getAttribute('list');
+        const datalist = datalistId ? document.getElementById(datalistId) : null;
+
+        // Create dropdown container
+        let dropdown = container.querySelector('.autocomplete-dropdown');
+        if (!dropdown) {
+            dropdown = document.createElement('div');
+            dropdown.className = 'autocomplete-dropdown hidden absolute left-0 right-0 top-full mt-1.5 bg-white rounded-xl shadow-2xl border border-gray-100 z-50 overflow-hidden divide-y divide-gray-50';
+            container.appendChild(dropdown);
+        }
+
+        let debounceTimer = null;
+        let activeIndex = -1;
+        let currentSuggestions = [];
+
+        input.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            const val = input.value;
+            const trimmed = val.trim();
+
+            if (!trimmed) {
+                clearInBarAutocomplete();
+                hideDropdown();
+                return;
+            }
+
+            debounceTimer = setTimeout(() => {
+                fetchSuggestions(trimmed);
+            }, 120);
+        });
+
+        input.addEventListener('keydown', (e) => {
+            // Tab key: completes the in-bar suggestion or selected dropdown item
+            if (e.key === 'Tab') {
+                if (currentSuggestions.length > 0) {
+                    const target = (activeIndex >= 0 && activeIndex < currentSuggestions.length)
+                        ? currentSuggestions[activeIndex]
+                        : currentSuggestions[0];
+                    if (target && target.toLowerCase() !== input.value.trim().toLowerCase()) {
+                        e.preventDefault();
+                        selectSuggestion(target);
+                        return;
+                    }
+                }
+            }
+
+            // ArrowRight: complete suggestion if cursor is at the very end of typed text
+            if (e.key === 'ArrowRight') {
+                if (input.selectionStart === input.value.length && currentSuggestions.length > 0) {
+                    const target = currentSuggestions[0];
+                    if (target && target.toLowerCase().startsWith(input.value.trim().toLowerCase())) {
+                        e.preventDefault();
+                        selectSuggestion(target);
+                        return;
+                    }
+                }
+            }
+
+            // Dropdown navigation
+            if (!dropdown.classList.contains('hidden') && currentSuggestions.length > 0) {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    activeIndex = (activeIndex + 1) % currentSuggestions.length;
+                    updateActiveItem();
+                    updateInBarWithActive();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    activeIndex = (activeIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
+                    updateActiveItem();
+                    updateInBarWithActive();
+                } else if (e.key === 'Enter') {
+                    if (activeIndex >= 0 && activeIndex < currentSuggestions.length) {
+                        e.preventDefault();
+                        selectSuggestion(currentSuggestions[activeIndex]);
+                    }
+                } else if (e.key === 'Escape') {
+                    clearInBarAutocomplete();
+                    hideDropdown();
+                }
+            }
+        });
+
+        // Tab Pill click
+        if (tabPill) {
+            tabPill.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (currentSuggestions.length > 0) {
+                    const target = (activeIndex >= 0) ? currentSuggestions[activeIndex] : currentSuggestions[0];
+                    selectSuggestion(target);
+                }
+            });
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!container.contains(e.target)) {
+                clearInBarAutocomplete();
+                hideDropdown();
+            }
+        });
+
+        async function fetchSuggestions(query) {
+            try {
+                const res = await fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                
+                // Re-verify that user input is still not empty
+                const currentText = input.value.trim();
+                if (!currentText) {
+                    clearInBarAutocomplete();
+                    hideDropdown();
+                    return;
+                }
+
+                if (data.suggestions && data.suggestions.length > 0) {
+                    currentSuggestions = data.suggestions;
+                    updateInBarAutocomplete(input.value, currentSuggestions[0]);
+                    updateDatalist(currentSuggestions);
+                    renderDropdown(currentSuggestions, query);
+                } else {
+                    clearInBarAutocomplete();
+                    hideDropdown();
+                }
+            } catch (err) {
+                console.error('Autocomplete fetch error:', err);
+                clearInBarAutocomplete();
+                hideDropdown();
+            }
+        }
+
+        function updateInBarAutocomplete(typedValue, suggestion) {
+            if (!ghostTyped || !ghostSuffix || !suggestion) {
+                clearInBarAutocomplete();
+                return;
+            }
+            const typedTrimmed = typedValue.trim();
+            const typedLower = typedTrimmed.toLowerCase();
+            const suggLower = suggestion.toLowerCase().trim();
+
+            if (suggLower.startsWith(typedLower) && suggLower !== typedLower) {
+                // Suffix matches prefix directly
+                const prefix = typedValue;
+                const remainder = suggestion.slice(prefix.trim().length);
+                ghostTyped.textContent = prefix;
+                ghostSuffix.textContent = remainder;
+
+                if (tabPill) {
+                    tabPill.innerHTML = `<span>Tab ⇥</span>`;
+                    tabPill.title = `Press Tab to complete "${suggestion}"`;
+                    tabPill.classList.remove('hidden');
+                }
+            } else if (suggLower !== typedLower) {
+                // Related suggestion
+                ghostTyped.textContent = typedValue;
+                ghostSuffix.textContent = '';
+                if (tabPill) {
+                    const shortText = suggestion.length > 20 ? suggestion.substring(0, 19) + '…' : suggestion;
+                    tabPill.innerHTML = `<span>↳ ${escapeHtml(shortText)} [Tab ⇥]</span>`;
+                    tabPill.title = `Press Tab to complete "${suggestion}"`;
+                    tabPill.classList.remove('hidden');
+                }
+            } else {
+                clearInBarAutocomplete();
+            }
+        }
+
+        function updateInBarWithActive() {
+            if (activeIndex >= 0 && activeIndex < currentSuggestions.length) {
+                updateInBarAutocomplete(input.value, currentSuggestions[activeIndex]);
+            }
+        }
+
+        function clearInBarAutocomplete() {
+            if (ghostTyped) ghostTyped.textContent = '';
+            if (ghostSuffix) ghostSuffix.textContent = '';
+            if (tabPill) tabPill.classList.add('hidden');
+        }
+
+        function updateDatalist(suggestions) {
+            if (!datalist) return;
+            datalist.innerHTML = '';
+            suggestions.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s;
+                datalist.appendChild(opt);
+            });
+        }
+
+        function renderDropdown(suggestions, query) {
+            dropdown.innerHTML = '';
+            activeIndex = -1;
+
+            // Header banner
+            const header = document.createElement('div');
+            header.className = 'px-4 py-2 bg-gray-50 text-[11px] font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between border-b border-gray-100';
+            header.innerHTML = `
+                <span class="flex items-center space-x-1">
+                    <span>💡</span><span>Search Suggestions</span>
+                </span>
+                <span class="text-[10px] font-normal text-gray-400">Tab to complete in bar, ↑↓ to pick</span>
+            `;
+            dropdown.appendChild(header);
+
+            const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+
+            suggestions.forEach((itemText, idx) => {
+                const item = document.createElement('div');
+                item.className = 'suggestion-item px-4 py-2.5 text-sm text-gray-700 hover:bg-krishi-50 cursor-pointer flex items-center justify-between transition-colors';
+                item.dataset.index = idx;
+
+                const highlighted = highlightMatches(itemText, words);
+
+                item.innerHTML = `
+                    <div class="flex items-center space-x-2.5 min-w-0">
+                        <span class="text-krishi-600 shrink-0 text-xs">🔍</span>
+                        <span class="truncate text-gray-800">${highlighted}</span>
+                    </div>
+                    <span class="text-xs text-gray-400 opacity-60 ml-2 shrink-0">↳</span>
+                `;
+
+                item.addEventListener('mouseenter', () => {
+                    activeIndex = idx;
+                    updateActiveItem();
+                    updateInBarWithActive();
+                });
+
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectSuggestion(itemText);
+                });
+
+                dropdown.appendChild(item);
+            });
+
+            dropdown.classList.remove('hidden');
+        }
+
+        function highlightMatches(text, words) {
+            let escaped = escapeHtml(text);
+            words.forEach(w => {
+                if (w.length > 1) {
+                    const regex = new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+                    escaped = escaped.replace(regex, '<strong class="text-krishi-700 font-bold">$1</strong>');
+                }
+            });
+            return escaped;
+        }
+
+        function updateActiveItem() {
+            const items = dropdown.querySelectorAll('.suggestion-item');
+            items.forEach((item, idx) => {
+                if (idx === activeIndex) {
+                    item.classList.add('bg-krishi-100', 'text-krishi-900');
+                    item.classList.remove('text-gray-700');
+                } else {
+                    item.classList.remove('bg-krishi-100', 'text-krishi-900');
+                    item.classList.add('text-gray-700');
+                }
+            });
+        }
+
+        function selectSuggestion(suggestion) {
+            input.value = suggestion;
+            clearInBarAutocomplete();
+            hideDropdown();
+            const form = input.closest('form');
+            if (form) {
+                if (form.id === 'quick-search-form') {
+                    window.location.href = `/search?q=${encodeURIComponent(suggestion)}`;
+                } else {
+                    form.submit();
+                }
+            }
+        }
+
+        function hideDropdown() {
+            dropdown.classList.add('hidden');
+            dropdown.innerHTML = '';
+            currentSuggestions = [];
+            activeIndex = -1;
+        }
+    });
+}
+
+// === Highlight Searched Terms in Search Result Cards ===
+function initSearchResultsHighlight() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const q = urlParams.get('q');
+    if (!q) return;
+
+    const words = q.trim().split(/\s+/).filter(w => w.length > 1);
+    if (!words.length) return;
+
+    document.querySelectorAll('.fact-card-text').forEach(el => {
+        let text = el.textContent;
+        words.forEach(w => {
+            const regex = new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+            text = text.replace(regex, '<mark class="bg-yellow-200 text-yellow-900 px-1 py-0.5 rounded font-semibold">$1</mark>');
+        });
+        el.innerHTML = text;
+    });
 }
 

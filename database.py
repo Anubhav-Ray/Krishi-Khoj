@@ -231,9 +231,22 @@ def search_facts(query=None, crop=None, category=None, season=None,
         params = []
 
         if query:
-            conditions.append("(f.fact_text LIKE ? OR f.original_text LIKE ?)")
-            like_query = f"%{query}%"
-            params.extend([like_query, like_query])
+            query_clean = query.strip()
+            # If quoted, e.g. "yellow rust", do exact phrase match
+            if (query_clean.startswith('"') and query_clean.endswith('"')) or (query_clean.startswith("'") and query_clean.endswith("'")):
+                exact = query_clean[1:-1].strip()
+                conditions.append("(f.fact_text LIKE ? OR f.original_text LIKE ? OR f.crop_name LIKE ? OR f.category LIKE ?)")
+                params.extend([f"%{exact}%", f"%{exact}%", f"%{exact}%", f"%{exact}%"])
+            else:
+                tokens = [t for t in query_clean.split() if t]
+                # Each token must match at least one relevant field in the fact
+                for t in tokens:
+                    conditions.append(
+                        "(f.fact_text LIKE ? OR f.original_text LIKE ? OR f.crop_name LIKE ? OR f.category LIKE ? OR f.season LIKE ? OR f.region LIKE ?)"
+                    )
+                    like_t = f"%{t}%"
+                    params.extend([like_t, like_t, like_t, like_t, like_t, like_t])
+
         if crop:
             conditions.append("f.crop_name LIKE ?")
             params.append(f"%{crop}%")
@@ -544,3 +557,237 @@ def get_document_facts(document_id, category=None, page_number=None):
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def get_search_autocomplete(query: str, limit: int = 8) -> list:
+    """
+    Generate autocomplete suggestions for search queries.
+    Supports single-word prefix completion (e.g. 'wh' -> 'Wheat') as well as
+    multi-word recommendations (e.g. 'wheat fer' -> 'Wheat Fertilizer').
+    
+    Args:
+        query: Search string typed by the user
+        limit: Maximum suggestions to return (default 8)
+        
+    Returns:
+        List of suggested search phrases
+    """
+    import re
+    
+    if not query or not query.strip():
+        return []
+
+    raw_tokens = [w.strip() for w in query.split() if w.strip()]
+    if not raw_tokens:
+        return []
+
+    tokens = [t.lower() for t in raw_tokens]
+    query_lower = query.strip().lower()
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        suggestions = []
+        seen = set()
+        stopwords = {
+            'and', 'to', 'for', 'of', 'in', 'on', 'at', 'with', 'by', 'from',
+            'is', 'are', 'the', 'a', 'an', 'or', 'as', 'into', 'than', 'this'
+        }
+
+        def add_suggestion(phrase, score=0):
+            if not phrase:
+                return
+            # Remove leading symbols/numbers/bullets
+            clean = re.sub(r'^[•\-\*\d\.\:\s]+', '', phrase).strip()
+            clean = re.sub(r'\s+', ' ', clean)
+            clean = re.sub(r'[,;:\.\-]+$', '', clean).strip()
+            
+            words = clean.split()
+            # Strip leading and trailing stopwords
+            while words and words[0].lower() in stopwords:
+                words.pop(0)
+            while words and words[-1].lower() in stopwords:
+                words.pop()
+                
+            if not words or len(words) > 7:
+                return
+                
+            clean = ' '.join(words)
+            if len(clean) < 3 or len(clean) > 55:
+                return
+            if clean.lower() == query_lower and len(words) == 1:
+                return
+                
+            title = ' '.join(w.capitalize() if not (w.isupper() and len(w) > 1) else w for w in words)
+            key = title.lower()
+            if key not in seen:
+                seen.add(key)
+                # Significant bonus for prefix match
+                if key.startswith(query_lower):
+                    score += 150
+                elif query_lower in key:
+                    score += 50
+                suggestions.append((score, title))
+
+        # Core curated agricultural entities for instant accurate suggestions
+        agri_catalog = [
+            # Cereals & Pulses & Commercial Crops
+            'Wheat', 'Rice', 'Paddy', 'Maize', 'Bajra', 'Jowar', 'Barley', 'Ragi',
+            'Gram', 'Chickpea', 'Moong', 'Urad', 'Arhar', 'Pigeon Pea', 'Lentil', 'Pea',
+            'Mustard', 'Groundnut', 'Soybean', 'Sunflower', 'Sesame',
+            'Cotton', 'Sugarcane', 'Jute', 'Tobacco', 'Tea', 'Coffee',
+            'Potato', 'Tomato', 'Onion', 'Okra', 'Brinjal', 'Cauliflower', 'Carrot',
+            # Categories & Core Topics
+            'Fertilizer', 'Fertilizer Dose', 'Fertilizer Management',
+            'Irrigation', 'Irrigation Stages', 'Water Management',
+            'Pest Control', 'Pest Management', 'Disease Management',
+            'Seed Rate', 'Seed Treatment', 'Varieties',
+            'Soil Preparation', 'Soil pH Range', 'Expected Yield', 'Sowing Time',
+            # Chemicals & Inputs
+            'Urea', 'DAP', 'MOP', 'NPK Ratio', 'Zinc Sulphate', 'Nitrogen Dose',
+            'FYM', 'Compost', 'Vermicompost', 'Propiconazole', 'Imidacloprid',
+            'Carbendazim', 'Chlorpyrifos', 'Cartap Hydrochloride', 'Tricyclazole', 'Hexaconazole',
+            # Major Pests & Diseases
+            'Yellow Rust', 'Leaf Rust', 'Karnal Bunt', 'Loose Smut',
+            'Stem Borer', 'Blast Disease', 'Sheath Blight', 'Brown Plant Hopper',
+            'Aphids', 'Termites',
+            # Varieties
+            'HD-2967', 'PBW-343', 'DBW-17', 'WH-1105', 'Pusa Basmati 1121', 'Pusa-44', 'PR-126', 'Swarna',
+            # Seasons & Agronomic Practices
+            'Rabi Season', 'Kharif Season', 'Zaid Season',
+            'Crown Root Initiation (CRI)', 'System of Rice Intensification (SRI)',
+            'Alternate Wetting and Drying (AWD)', 'Laser Leveling', 'Zero Tillage'
+        ]
+
+        # ── Case A: Single-word / Prefix search (e.g. 'wh', 'ri', 'fe') ──────
+        if len(raw_tokens) == 1:
+            prefix = raw_tokens[0].lower()
+            
+            # 1. Match from catalog
+            for item in agri_catalog:
+                if item.lower().startswith(prefix):
+                    add_suggestion(item, score=120)
+                elif prefix in item.lower():
+                    add_suggestion(item, score=30)
+
+            # 2. Match from Database distinct crops
+            cursor.execute("SELECT DISTINCT crop_name FROM facts WHERE LOWER(crop_name) LIKE ? LIMIT 10", (f"{prefix}%",))
+            for row in cursor.fetchall():
+                crop = row['crop_name']
+                if crop:
+                    add_suggestion(crop, score=140)
+                    for topic in ['Fertilizer', 'Varieties', 'Irrigation', 'Seed Rate', 'Yellow Rust', 'Expected Yield']:
+                        add_suggestion(f"{crop} {topic}", score=80)
+
+            # 3. Match from Database distinct categories
+            cursor.execute("SELECT DISTINCT category FROM facts WHERE LOWER(category) LIKE ? LIMIT 10", (f"{prefix}%",))
+            for row in cursor.fetchall():
+                cat = row['category']
+                if cat:
+                    add_suggestion(cat, score=110)
+
+            # 4. Search distinct matching words from fact_text in DB
+            cursor.execute("SELECT fact_text FROM facts WHERE LOWER(fact_text) LIKE ? LIMIT 30", (f"%{prefix}%",))
+            for row in cursor.fetchall():
+                words = re.sub(r'[^\w\s-]', ' ', row['fact_text']).split()
+                for i, w in enumerate(words):
+                    if w.lower().startswith(prefix) and len(w) > len(prefix):
+                        # Single word or 2-word phrase
+                        add_suggestion(w, score=70)
+                        if i + 1 < len(words):
+                            add_suggestion(f"{w} {words[i+1]}", score=60)
+
+        # ── Case B: Multi-word search (e.g. 'wheat fer', 'yellow rust') ────────
+        else:
+            clauses = []
+            params = []
+            for t in tokens:
+                clauses.append("(f.fact_text LIKE ? OR f.crop_name LIKE ? OR f.category LIKE ? OR f.original_text LIKE ?)")
+                params.extend([f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%"])
+            
+            sql = f"""
+                SELECT DISTINCT f.crop_name, f.category, f.fact_text, f.season, f.region
+                FROM facts f
+                WHERE {' AND '.join(clauses)}
+                LIMIT 80
+            """
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+            # 1. Catalog multi-word matches
+            for item in agri_catalog:
+                item_lower = item.lower()
+                if all(t in item_lower for t in tokens):
+                    add_suggestion(item, score=110)
+
+            # 2. Crop + Category / Season combinations
+            for row in rows:
+                crop = row['crop_name']
+                cat = row['category']
+                season = row['season']
+                if crop and cat:
+                    combo = f"{crop} {cat}"
+                    if all(t in combo.lower() for t in tokens):
+                        add_suggestion(combo, score=100)
+                if crop and season:
+                    combo = f"{crop} {season} Season"
+                    if all(t in combo.lower() for t in tokens):
+                        add_suggestion(combo, score=90)
+
+            # 3. Key agricultural topics + Crop
+            common_topics = [
+                'Fertilizer Management', 'Fertilizer Dose', 'Seed Rate', 'Seed Treatment',
+                'Irrigation Stages', 'Water Management', 'Pest Control', 'Disease Management',
+                'Varieties', 'Soil Preparation', 'Expected Yield', 'Sowing Time',
+                'Yellow Rust', 'Leaf Rust', 'Karnal Bunt', 'Stem Borer', 'Blast',
+                'Sheath Blight', 'Aphids', 'Termites', 'Brown Plant Hopper'
+            ]
+            for row in rows:
+                crop = row['crop_name']
+                if crop:
+                    for topic in common_topics:
+                        combo = f"{crop} {topic}"
+                        if all(t in combo.lower() for t in tokens):
+                            add_suggestion(combo, score=85)
+
+            # 4. Meaningful clauses in fact_text
+            for row in rows:
+                crop = row['crop_name'] or ''
+                text = row['fact_text']
+                crop_lower = crop.lower()
+                sub_tokens = [t for t in tokens if t != crop_lower]
+                
+                clauses_in_text = re.split(r'[,;:\.\(\)]', text)
+                for clause in clauses_in_text:
+                    clause = clause.strip()
+                    c_lower = clause.lower()
+                    if all(t in c_lower for t in tokens):
+                        add_suggestion(clause, score=80)
+                    elif sub_tokens and all(t in c_lower for t in sub_tokens):
+                        add_suggestion(f"{crop} {clause}", score=75)
+
+            # 5. Sliding window n-grams
+            for row in rows:
+                crop = row['crop_name'] or ''
+                text = row['fact_text']
+                clean_text = re.sub(r'[^\w\s-]', ' ', text)
+                words = clean_text.split()
+                crop_lower = crop.lower()
+                sub_tokens = [t for t in tokens if t != crop_lower]
+
+                for i in range(len(words)):
+                    for length in (3, 4, 5):
+                        if i + length <= len(words):
+                            window = words[i:i + length]
+                            w_lower = [w.lower() for w in window]
+                            if all(any(t in w for w in w_lower) for t in tokens):
+                                add_suggestion(' '.join(window), score=50)
+                            elif sub_tokens and all(any(t in w for w in w_lower) for t in sub_tokens):
+                                add_suggestion(f"{crop} {' '.join(window)}", score=45)
+
+        # Sort by score descending, then length ascending
+        suggestions.sort(key=lambda x: (-x[0], len(x[1])))
+        return [s[1] for s in suggestions[:limit]]
+    finally:
+        conn.close()
+
