@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}All Documents{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between mb-8">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-800 flex items-center space-x-2">
+                <span>📚</span><span>All Documents</span>
+            </h1>
+            <p class="text-gray-500 mt-2">
+                <span class="font-semibold text-gray-700">{{ documents|length }}</span> documents with
+                <span class="font-semibold text-krishi-700">{{ total_facts }}</span> extracted facts
+            </p>
+        </div>
+        <a href="/"
+            class="mt-4 md:mt-0 inline-flex items-center bg-krishi-600 hover:bg-krishi-700 text-white font-semibold py-2.5 px-5 rounded-xl shadow hover:shadow-md transition-all text-sm">
+            📤 Upload New PDF
+        </a>
+    </div>
+
+    {% if documents %}
+    <!-- Document Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {% for doc in documents %}
+        <a href="/document/{{ doc.id }}" class="hover-card bg-white rounded-xl shadow-md border border-gray-100 p-6 block group">
+            <div class="flex items-start justify-between mb-4">
+                <div class="flex items-center space-x-2 min-w-0">
+                    <span class="text-2xl">📄</span>
+                    <h3 class="font-bold text-gray-800 truncate group-hover:text-krishi-700 transition-colors">{{ doc.filename }}</h3>
+                </div>
+                <span class="shrink-0 bg-krishi-100 text-krishi-700 text-xs font-bold px-2.5 py-1 rounded-full">v{{ doc.version }}</span>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-3 gap-2 text-center text-xs mb-4">
+                <div class="bg-krishi-50 rounded-lg py-2.5">
+                    <div class="font-bold text-krishi-700 text-lg">{{ doc.fact_count }}</div>
+                    <div class="text-gray-500 mt-0.5">Facts</div>
+                </div>
+                <div class="bg-gray-50 rounded-lg py-2.5">
+                    <div class="font-bold text-gray-700 text-lg">{{ doc.page_count }}</div>
+                    <div class="text-gray-500 mt-0.5">Pages</div>
+                </div>
+                <div class="bg-gray-50 rounded-lg py-2.5">
+                    <div class="font-bold text-gray-700 text-sm">
+                        {% if doc.file_size is defined and doc.file_size %}
+                            {% if doc.file_size >= 1048576 %}{{ "%.1f"|format(doc.file_size / 1048576) }}MB
+                            {% elif doc.file_size >= 1024 %}{{ "%.0f"|format(doc.file_size / 1024) }}KB
+                            {% else %}{{ doc.file_size }}B{% endif %}
+                        {% else %}—{% endif %}
+                    </div>
+                    <div class="text-gray-500 mt-0.5">Size</div>
+                </div>
+            </div>
+
+            <!-- Upload Date -->
+            <div class="flex items-center justify-between text-xs text-gray-500 mb-3">
+                <span>📅 {{ doc.upload_date[:10] if doc.upload_date|length > 10 else doc.upload_date }}</span>
+                <code class="font-mono text-gray-400">{{ doc.file_hash[:8] }}…</code>
+            </div>
+
+            <!-- Category Mini-Bar -->
+            {% if doc.categories is defined and doc.categories %}
+            <div class="flex rounded-full overflow-hidden h-2 bg-gray-100">
+                {% for cat, count in doc.categories.items() %}
+                {% set cat_lower = cat|lower %}
+                <div class="h-2
+                    {% if cat_lower == 'fertilizer' %}bg-green-500
+                    {% elif cat_lower == 'irrigation' %}bg-blue-500
+                    {% elif cat_lower == 'pest' %}bg-red-500
+                    {% elif cat_lower == 'soil' %}bg-amber-700
+                    {% elif cat_lower == 'seed' %}bg-amber-500
+                    {% elif cat_lower == 'yield' %}bg-purple-500
+                    {% elif cat_lower == 'season' %}bg-teal-500
+                    {% else %}bg-gray-400{% endif %}"
+                    style="width: {{ (count / doc.fact_count * 100) if doc.fact_count > 0 else 0 }}%"
+                    title="{{ cat }}: {{ count }}"></div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- View Link -->
+            <div class="mt-4 pt-3 border-t border-gray-50">
+                <span class="text-krishi-600 text-sm font-medium group-hover:translate-x-1 inline-block transition-transform">
+                    View Details →
+                </span>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+
+    {% else %}
+    <!-- Empty State -->
+    <div class="text-center py-20">
+        <div class="text-7xl mb-6">📁</div>
+        <h3 class="text-2xl font-bold text-gray-700 mb-3">No documents yet</h3>
+        <p class="text-gray-500 mb-8 max-w-md mx-auto">Upload your first farming PDF to start extracting searchable facts with full source provenance.</p>
+        <a href="/"
+            class="inline-flex items-center bg-krishi-600 hover:bg-krishi-700 text-white font-semibold py-3 px-8 rounded-xl shadow-md hover:shadow-lg transition-all">
+            📤 Upload Your First PDF
+        </a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

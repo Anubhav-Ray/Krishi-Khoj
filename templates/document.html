@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}{{ document.filename }}{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <!-- Breadcrumb -->
+    <nav class="text-sm mb-6">
+        <ol class="flex items-center space-x-2 text-gray-500">
+            <li><a href="/" class="hover:text-krishi-600 transition-colors">Home</a></li>
+            <li><span class="text-gray-300">/</span></li>
+            <li><a href="/documents" class="hover:text-krishi-600 transition-colors">Documents</a></li>
+            <li><span class="text-gray-300">/</span></li>
+            <li class="text-gray-800 font-medium">{{ document.filename }}</li>
+        </ol>
+    </nav>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <!-- Main Content -->
+        <div class="lg:col-span-2 space-y-6">
+
+            <!-- Document Header Card -->
+            <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-8">
+                <div class="flex items-start justify-between mb-6">
+                    <div class="flex items-center space-x-3">
+                        <span class="text-3xl">📄</span>
+                        <div>
+                            <h1 class="text-2xl font-bold text-gray-800">{{ document.filename }}</h1>
+                            <p class="text-sm text-gray-500 mt-1">Uploaded document details</p>
+                        </div>
+                    </div>
+                    <span class="bg-krishi-100 text-krishi-700 text-sm font-bold px-3 py-1 rounded-full">v{{ document.version }}</span>
+                </div>
+
+                <!-- Metadata Grid -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-gray-50 rounded-xl p-4 text-center">
+                        <div class="text-lg font-bold text-gray-800">v{{ document.version }}</div>
+                        <div class="text-xs text-gray-500 mt-1">Version</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-xl p-4 text-center">
+                        <div class="text-lg font-bold text-gray-800">{{ document.page_count }}</div>
+                        <div class="text-xs text-gray-500 mt-1">Pages</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-xl p-4 text-center">
+                        <div class="text-lg font-bold text-krishi-700">{{ summary.total_facts }}</div>
+                        <div class="text-xs text-gray-500 mt-1">Total Facts</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-xl p-4 text-center">
+                        <div class="text-lg font-bold text-gray-800">{{ document.upload_date[:10] if document.upload_date|length > 10 else document.upload_date }}</div>
+                        <div class="text-xs text-gray-500 mt-1">Upload Date</div>
+                    </div>
+                </div>
+
+                <!-- File Size -->
+                <div class="mb-4">
+                    <span class="text-sm text-gray-500">File Size: </span>
+                    <span class="text-sm font-medium text-gray-700">
+                        {% if document.file_size >= 1048576 %}
+                            {{ "%.2f"|format(document.file_size / 1048576) }} MB
+                        {% elif document.file_size >= 1024 %}
+                            {{ "%.1f"|format(document.file_size / 1024) }} KB
+                        {% else %}
+                            {{ document.file_size }} bytes
+                        {% endif %}
+                    </span>
+                </div>
+
+                <!-- Hash -->
+                <div class="mb-6">
+                    <label class="text-xs text-gray-500 font-medium block mb-2">SHA-256 Hash</label>
+                    <div class="flex items-center space-x-2">
+                        <div class="hash-display flex-1">{{ document.file_hash }}</div>
+                        <button data-copy="{{ document.file_hash }}"
+                            class="shrink-0 bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-2 rounded-lg text-xs font-medium transition-colors">
+                            📋 Copy
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Delete Button -->
+                <form action="/document/{{ document.id }}" method="POST" class="inline">
+                    <input type="hidden" name="_method" value="DELETE">
+                    <button type="submit"
+                        class="delete-btn bg-red-50 hover:bg-red-100 text-red-600 hover:text-red-700 border border-red-200 font-medium py-2 px-4 rounded-xl text-sm transition-all">
+                        🗑️ Delete Document
+                    </button>
+                </form>
+            </div>
+
+            <!-- Page-by-Page View -->
+            <div class="space-y-4">
+                <h2 class="text-xl font-bold text-gray-800 flex items-center space-x-2">
+                    <span>📑</span><span>Page-by-Page Extraction</span>
+                </h2>
+
+                {% for page in pages %}
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <!-- Page Header -->
+                    <div class="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center justify-between cursor-pointer"
+                         onclick="this.parentElement.querySelector('.page-content').classList.toggle('hidden')">
+                        <div class="flex items-center space-x-3">
+                            <h3 class="font-semibold text-gray-700">Page {{ page.page_number }}</h3>
+                            <span class="bg-krishi-100 text-krishi-700 text-xs font-bold px-2 py-0.5 rounded-full">
+                                {{ page.facts|length }} fact{{ 's' if page.facts|length != 1 else '' }}
+                            </span>
+                        </div>
+                        <svg class="w-5 h-5 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+
+                    <!-- Page Content -->
+                    <div class="page-content px-6 py-4 space-y-4">
+                        <!-- Facts for this page -->
+                        {% for fact in page.facts %}
+                        <div class="border border-gray-100 rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div class="flex flex-wrap items-center gap-2 mb-2">
+                                {% set cat_lower = fact.category|lower if fact.category else 'general' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold
+                                    {% if cat_lower == 'fertilizer' %}badge-fertilizer
+                                    {% elif cat_lower == 'irrigation' %}badge-irrigation
+                                    {% elif cat_lower == 'pest' %}badge-pest
+                                    {% elif cat_lower == 'soil' %}badge-soil
+                                    {% elif cat_lower == 'seed' %}badge-seed
+                                    {% elif cat_lower == 'yield' %}badge-yield
+                                    {% elif cat_lower == 'season' %}badge-season
+                                    {% else %}badge-general{% endif %}">
+                                    {{ fact.category or 'General' }}
+                                </span>
+                                {% if fact.crop_name %}
+                                <span class="text-xs text-saffron-700 font-medium">🌾 {{ fact.crop_name }}</span>
+                                {% endif %}
+                                {% if fact.value %}
+                                <span class="text-xs font-bold text-saffron-600 bg-saffron-50 px-2 py-0.5 rounded">{{ fact.value }}{% if fact.unit %} {{ fact.unit }}{% endif %}</span>
+                                {% endif %}
+                            </div>
+                            <p class="text-sm text-gray-700 leading-relaxed">{{ fact.fact_text }}</p>
+                            <a href="/fact/{{ fact.id }}" class="text-xs text-krishi-600 hover:text-krishi-700 font-medium mt-2 inline-block">View details →</a>
+                        </div>
+                        {% endfor %}
+
+                        {% if page.facts|length == 0 %}
+                        <p class="text-sm text-gray-400 italic py-2">No facts extracted from this page.</p>
+                        {% endif %}
+
+                        <!-- Source Text Toggle -->
+                        <button class="source-toggle text-sm text-gray-500 hover:text-krishi-600 font-medium transition-colors"
+                            data-target="source-page-{{ page.page_number }}">
+                            👁️ Show Source Text
+                        </button>
+                        <div id="source-page-{{ page.page_number }}" class="hidden">
+                            <div class="source-text">{{ page.page_text }}</div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="space-y-6">
+            <!-- Category Breakdown -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="font-semibold text-gray-800 mb-4">📊 Category Breakdown</h3>
+                {% if summary.by_category %}
+                <div class="space-y-3">
+                    {% for cat, count in summary.by_category.items() %}
+                    {% set percentage = (count / summary.total_facts * 100) if summary.total_facts > 0 else 0 %}
+                    <div>
+                        <div class="flex items-center justify-between text-sm mb-1">
+                            <span class="font-medium text-gray-700">{{ cat }}</span>
+                            <span class="text-gray-500">{{ count }}</span>
+                        </div>
+                        <div class="w-full bg-gray-100 rounded-full h-2.5">
+                            {% set cat_lower = cat|lower %}
+                            <div class="category-bar h-2.5 rounded-full
+                                {% if cat_lower == 'fertilizer' %}bg-green-500
+                                {% elif cat_lower == 'irrigation' %}bg-blue-500
+                                {% elif cat_lower == 'pest' %}bg-red-500
+                                {% elif cat_lower == 'soil' %}bg-amber-700
+                                {% elif cat_lower == 'seed' %}bg-amber-500
+                                {% elif cat_lower == 'yield' %}bg-purple-500
+                                {% elif cat_lower == 'season' %}bg-teal-500
+                                {% else %}bg-gray-400{% endif %}"
+                                style="width: {{ percentage }}%"></div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-400 italic">No data available</p>
+                {% endif %}
+            </div>
+
+            <!-- Crops Found -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="font-semibold text-gray-800 mb-4">🌾 Crops Found</h3>
+                {% if summary.crops_found %}
+                <div class="flex flex-wrap gap-2">
+                    {% for crop in summary.crops_found %}
+                    <span class="bg-saffron-50 text-saffron-700 text-xs font-medium px-3 py-1.5 rounded-full border border-saffron-200">{{ crop }}</span>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-400 italic">No crops identified</p>
+                {% endif %}
+            </div>
+
+            <!-- Seasons Referenced -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="font-semibold text-gray-800 mb-4">📅 Seasons Referenced</h3>
+                {% if summary.seasons_found %}
+                <div class="flex flex-wrap gap-2">
+                    {% for season in summary.seasons_found %}
+                    <span class="bg-teal-50 text-teal-700 text-xs font-medium px-3 py-1.5 rounded-full border border-teal-200">{{ season }}</span>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-400 italic">No seasons referenced</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

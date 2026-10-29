@@ -1,0 +1,133 @@
+/* Custom styles for Krishi Khoj */
+
+/* Smooth transitions */
+* { transition: all 0.2s ease; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #15803d; border-radius: 4px; }
+
+/* Upload drop zone */
+.drop-zone {
+    border: 2px dashed #22c55e;
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    background: #f0fdf4;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+    border-color: #15803d;
+    background: #dcfce7;
+    transform: scale(1.01);
+}
+
+/* Fact highlight in source text */
+.fact-highlight {
+    background-color: #fef08a;
+    padding: 2px 4px;
+    border-radius: 2px;
+    border-left: 3px solid #f59e0b;
+}
+
+/* Category badges */
+.badge-fertilizer { background: #dcfce7; color: #15803d; }
+.badge-seed { background: #fef3c7; color: #92400e; }
+.badge-irrigation { background: #dbeafe; color: #1d4ed8; }
+.badge-pest { background: #fecaca; color: #b91c1c; }
+.badge-soil { background: #e8d5b7; color: #78350f; }
+.badge-yield { background: #e9d5ff; color: #7c3aed; }
+.badge-season { background: #ccfbf1; color: #0d9488; }
+.badge-general { background: #f1f5f9; color: #475569; }
+
+/* Provenance panel */
+.provenance-panel {
+    border: 2px solid #22c55e;
+    border-radius: 12px;
+    padding: 1.5rem;
+    background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+}
+
+/* Hash display */
+.hash-display {
+    font-family: 'Courier New', monospace;
+    font-size: 0.75rem;
+    background: #1e293b;
+    color: #22c55e;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    word-break: break-all;
+}
+
+/* Animated upload progress */
+.upload-progress {
+    height: 4px;
+    background: #e2e8f0;
+    border-radius: 2px;
+    overflow: hidden;
+}
+.upload-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #22c55e, #15803d);
+    border-radius: 2px;
+    animation: progress 2s ease-in-out infinite;
+}
+@keyframes progress {
+    0% { width: 0%; }
+    50% { width: 70%; }
+    100% { width: 100%; }
+}
+
+/* Source text container */
+.source-text {
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    line-height: 1.8;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 1.5rem;
+    white-space: pre-wrap;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+/* Category bar chart */
+.category-bar {
+    height: 24px;
+    border-radius: 4px;
+    min-width: 20px;
+    display: inline-block;
+}
+
+/* Card hover effect */
+.hover-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+}
+
+/* Pagination */
+.page-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    font-size: 0.875rem;
+}
+.page-link.active {
+    background: #15803d;
+    color: white;
+}
+
+/* Flash messages */
+.flash-message {
+    animation: slideDown 0.3s ease;
+}
+@keyframes slideDown {
+    from { transform: translateY(-20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}

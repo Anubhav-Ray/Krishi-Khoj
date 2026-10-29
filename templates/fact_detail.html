@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Fact #{{ fact.id }} — {{ fact.category }}{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <!-- Breadcrumb -->
+    <nav class="text-sm mb-6">
+        <ol class="flex items-center space-x-2 text-gray-500">
+            <li><a href="/" class="hover:text-krishi-600 transition-colors">Home</a></li>
+            <li><span class="text-gray-300">/</span></li>
+            <li><a href="/documents" class="hover:text-krishi-600 transition-colors">Documents</a></li>
+            <li><span class="text-gray-300">/</span></li>
+            <li><a href="/document/{{ fact.document_id }}" class="hover:text-krishi-600 transition-colors">{{ fact.filename }}</a></li>
+            <li><span class="text-gray-300">/</span></li>
+            <li class="text-gray-800 font-medium">Fact #{{ fact.id }}</li>
+        </ol>
+    </nav>
+
+    <!-- Fact Card -->
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-8 mb-8">
+        <div class="flex flex-wrap items-center gap-3 mb-5">
+            <!-- Category Badge (Large) -->
+            {% set cat_lower = fact.category|lower if fact.category else 'general' %}
+            <span class="inline-flex items-center px-4 py-2 rounded-xl text-sm font-bold
+                {% if cat_lower == 'fertilizer' %}badge-fertilizer
+                {% elif cat_lower == 'irrigation' %}badge-irrigation
+                {% elif cat_lower == 'pest' %}badge-pest
+                {% elif cat_lower == 'soil' %}badge-soil
+                {% elif cat_lower == 'seed' %}badge-seed
+                {% elif cat_lower == 'yield' %}badge-yield
+                {% elif cat_lower == 'season' %}badge-season
+                {% else %}badge-general{% endif %}">
+                {{ fact.category or 'General' }}
+            </span>
+
+            <!-- Crop -->
+            {% if fact.crop_name %}
+            <span class="inline-flex items-center px-3 py-1.5 rounded-xl text-sm font-medium bg-saffron-100 text-saffron-700">
+                🌾 {{ fact.crop_name }}
+            </span>
+            {% endif %}
+
+            <!-- Season -->
+            {% if fact.season %}
+            <span class="inline-flex items-center px-3 py-1.5 rounded-xl text-sm font-medium bg-teal-50 text-teal-700">
+                📅 {{ fact.season }}
+            </span>
+            {% endif %}
+
+            <!-- Region -->
+            {% if fact.region %}
+            <span class="inline-flex items-center px-3 py-1.5 rounded-xl text-sm font-medium bg-blue-50 text-blue-700">
+                📍 {{ fact.region }}
+            </span>
+            {% endif %}
+        </div>
+
+        <!-- Fact Text -->
+        <p class="text-xl font-bold text-gray-800 leading-relaxed mb-5">{{ fact.fact_text }}</p>
+
+        <!-- Value + Unit -->
+        {% if fact.value %}
+        <div class="mb-4">
+            <span class="inline-flex items-center px-4 py-2 rounded-xl text-base font-bold bg-saffron-50 text-saffron-700 border-2 border-saffron-200">
+                📊 {{ fact.value }}{% if fact.unit %} {{ fact.unit }}{% endif %}
+            </span>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Provenance Panel -->
+    <div class="provenance-panel mb-8">
+        <h2 class="text-lg font-bold text-krishi-800 mb-5 flex items-center space-x-2">
+            <span>🔗</span><span>Source Provenance</span>
+        </h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div class="space-y-3">
+                <div>
+                    <label class="text-xs text-krishi-600 font-semibold uppercase tracking-wide">Document</label>
+                    <p class="text-sm font-medium text-gray-800 mt-1">
+                        <a href="/document/{{ fact.document_id }}" class="text-krishi-700 hover:text-krishi-800 underline decoration-dotted">
+                            📄 {{ fact.filename }}
+                        </a>
+                    </p>
+                </div>
+                <div>
+                    <label class="text-xs text-krishi-600 font-semibold uppercase tracking-wide">Version</label>
+                    <p class="text-sm font-medium text-gray-800 mt-1">v{{ fact.version }}</p>
+                </div>
+                <div>
+                    <label class="text-xs text-krishi-600 font-semibold uppercase tracking-wide">Page</label>
+                    <p class="text-sm font-medium text-gray-800 mt-1">{{ fact.page_number }}</p>
+                </div>
+            </div>
+            <div class="space-y-3">
+                <div>
+                    <label class="text-xs text-krishi-600 font-semibold uppercase tracking-wide">Document Hash (SHA-256)</label>
+                    <div class="hash-display mt-1 text-xs">{{ fact.file_hash }}</div>
+                </div>
+                <div>
+                    <label class="text-xs text-krishi-600 font-semibold uppercase tracking-wide">Extraction Date</label>
+                    <p class="text-sm font-medium text-gray-800 mt-1">{{ fact.extraction_date }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Formatted Citation -->
+        <div class="bg-white rounded-xl border border-krishi-200 p-4 flex items-center justify-between">
+            <div>
+                <label class="text-xs text-krishi-600 font-semibold uppercase tracking-wide">Citation</label>
+                <p class="text-sm font-mono font-medium text-gray-800 mt-1">[{{ fact.filename }} v{{ fact.version }}, Page {{ fact.page_number }}]</p>
+            </div>
+            <button data-copy="[{{ fact.filename }} v{{ fact.version }}, Page {{ fact.page_number }}]"
+                class="shrink-0 bg-krishi-100 hover:bg-krishi-200 text-krishi-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                📋 Copy Citation
+            </button>
+        </div>
+    </div>
+
+    <!-- Source Context Panel -->
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-8">
+        <h2 class="text-lg font-bold text-gray-800 mb-2 flex items-center space-x-2">
+            <span>📄</span><span>Original Page Text</span>
+        </h2>
+        <p class="text-sm text-gray-500 mb-5">The extracted fact is <span class="fact-highlight">highlighted</span> in the source text below for verification.</p>
+
+        <!-- Hidden element holding the original text for JS highlighting -->
+        <div id="fact-original-text" class="hidden">{{ fact.original_text or fact.fact_text }}</div>
+
+        <div id="source-text-content" class="source-text">{{ page_text }}</div>
+    </div>
+
+    <!-- Back Link -->
+    <div class="mt-8 text-center">
+        <a href="/document/{{ fact.document_id }}" class="text-krishi-600 hover:text-krishi-700 font-medium">
+            ← Back to Document
+        </a>
+        <span class="text-gray-300 mx-3">|</span>
+        <a href="/search" class="text-krishi-600 hover:text-krishi-700 font-medium">
+            🔍 Search All Facts
+        </a>
+    </div>
+</div>
+{% endblock %}

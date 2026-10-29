@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Search Facts{% endblock %}
+
+{% block content %}
+<!-- Search & Filter Bar -->
+<section class="sticky top-16 z-40 bg-white shadow-md border-b border-gray-100">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <form method="GET" action="/search" class="space-y-3">
+            <div class="flex flex-col md:flex-row md:items-center gap-3">
+                <!-- Search Input -->
+                <div class="flex-1 relative">
+                    <span class="absolute inset-y-0 left-3 flex items-center text-gray-400">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    </span>
+                    <input type="text" name="q" value="{{ query or '' }}" placeholder="Search farming facts... (press / to focus)"
+                        class="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-krishi-500 focus:border-krishi-500 outline-none text-sm">
+                </div>
+
+                <!-- Filters -->
+                <select name="crop" class="border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-krishi-500 outline-none bg-white min-w-[140px]">
+                    <option value="">All Crops</option>
+                    {% for crop in crops %}
+                    <option value="{{ crop }}" {% if crop_filter == crop %}selected{% endif %}>{{ crop }}</option>
+                    {% endfor %}
+                </select>
+
+                <select name="category" class="border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-krishi-500 outline-none bg-white min-w-[140px]">
+                    <option value="">All Categories</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat }}" {% if category_filter == cat %}selected{% endif %}>{{ cat }}</option>
+                    {% endfor %}
+                </select>
+
+                <select name="season" class="border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-krishi-500 outline-none bg-white min-w-[140px]">
+                    <option value="">All Seasons</option>
+                    {% for s in seasons %}
+                    <option value="{{ s }}" {% if season_filter == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+
+                <!-- Search Button -->
+                <button type="submit"
+                    class="bg-krishi-600 hover:bg-krishi-700 text-white font-semibold py-2.5 px-5 rounded-xl shadow hover:shadow-md transition-all text-sm whitespace-nowrap">
+                    🔍 Search
+                </button>
+            </div>
+
+            <!-- Secondary Row -->
+            <div class="flex items-center justify-between text-sm">
+                <div class="flex items-center space-x-3">
+                    <a href="/search" class="text-gray-500 hover:text-krishi-600 transition-colors">✕ Clear Filters</a>
+                    {% if query or crop_filter or category_filter or season_filter %}
+                    <span class="text-gray-300">|</span>
+                    <span class="text-gray-500">
+                        Active:
+                        {% if query %}<span class="bg-krishi-100 text-krishi-700 px-2 py-0.5 rounded-full text-xs font-medium">q: {{ query }}</span>{% endif %}
+                        {% if crop_filter %}<span class="bg-saffron-100 text-saffron-700 px-2 py-0.5 rounded-full text-xs font-medium">{{ crop_filter }}</span>{% endif %}
+                        {% if category_filter %}<span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-xs font-medium">{{ category_filter }}</span>{% endif %}
+                        {% if season_filter %}<span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full text-xs font-medium">{{ season_filter }}</span>{% endif %}
+                    </span>
+                    {% endif %}
+                </div>
+                <div class="flex items-center space-x-2">
+                    <a href="/api/export?format=csv{% if query %}&q={{ query }}{% endif %}{% if crop_filter %}&crop={{ crop_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if season_filter %}&season={{ season_filter }}{% endif %}"
+                        class="text-gray-500 hover:text-krishi-600 border border-gray-200 hover:border-krishi-300 px-3 py-1.5 rounded-lg text-xs font-medium transition-all">
+                        📥 Export CSV
+                    </a>
+                    <a href="/api/export?format=json{% if query %}&q={{ query }}{% endif %}{% if crop_filter %}&crop={{ crop_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if season_filter %}&season={{ season_filter }}{% endif %}"
+                        class="text-gray-500 hover:text-krishi-600 border border-gray-200 hover:border-krishi-300 px-3 py-1.5 rounded-lg text-xs font-medium transition-all">
+                        📥 Export JSON
+                    </a>
+                </div>
+            </div>
+        </form>
+    </div>
+</section>
+
+<!-- Results Section -->
+<section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Results Count -->
+    <div class="mb-6">
+        <p class="text-gray-600 text-sm">
+            Showing <span class="font-bold text-gray-800">{{ facts|length }}</span> of <span class="font-bold text-gray-800">{{ total }}</span> facts
+            {% if query %} matching "<span class="text-krishi-600 font-semibold">{{ query }}</span>"{% endif %}
+        </p>
+    </div>
+
+    {% if facts %}
+    <!-- Fact Cards -->
+    <div class="space-y-4">
+        {% for fact in facts %}
+        <div class="hover-card bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div class="flex flex-wrap items-start gap-2 mb-3">
+                <!-- Category Badge -->
+                {% set cat_lower = fact.category|lower if fact.category else 'general' %}
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold
+                    {% if cat_lower == 'fertilizer' %}badge-fertilizer
+                    {% elif cat_lower == 'irrigation' %}badge-irrigation
+                    {% elif cat_lower == 'pest' %}badge-pest
+                    {% elif cat_lower == 'soil' %}badge-soil
+                    {% elif cat_lower == 'seed' %}badge-seed
+                    {% elif cat_lower == 'yield' %}badge-yield
+                    {% elif cat_lower == 'season' %}badge-season
+                    {% else %}badge-general{% endif %}">
+                    {{ fact.category or 'General' }}
+                </span>
+
+                <!-- Crop -->
+                {% if fact.crop_name %}
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-saffron-100 text-saffron-700">
+                    🌾 {{ fact.crop_name }}
+                </span>
+                {% endif %}
+
+                <!-- Season -->
+                {% if fact.season %}
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-teal-50 text-teal-700">
+                    📅 {{ fact.season }}
+                </span>
+                {% endif %}
+
+                <!-- Region -->
+                {% if fact.region %}
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
+                    📍 {{ fact.region }}
+                </span>
+                {% endif %}
+            </div>
+
+            <!-- Fact Text -->
+            <p class="text-gray-800 font-medium text-base mb-3 leading-relaxed">{{ fact.fact_text }}</p>
+
+            <!-- Value + Unit -->
+            {% if fact.value %}
+            <div class="mb-3">
+                <span class="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-bold bg-saffron-50 text-saffron-700 border border-saffron-200">
+                    📊 {{ fact.value }}{% if fact.unit %} {{ fact.unit }}{% endif %}
+                </span>
+            </div>
+            {% endif %}
+
+            <!-- Provenance Line -->
+            <div class="flex items-center justify-between pt-3 border-t border-gray-50">
+                <p class="text-xs text-gray-400 flex items-center space-x-2">
+                    <span>📄</span>
+                    <span class="font-medium text-gray-500">{{ fact.filename }}</span>
+                    <span class="text-gray-300">v{{ fact.version }}</span>
+                    <span class="text-gray-300">•</span>
+                    <span>Page {{ fact.page_number }}</span>
+                    <span class="text-gray-300">•</span>
+                    <span>🔗 Source</span>
+                </p>
+                <a href="/fact/{{ fact.id }}" class="text-krishi-600 hover:text-krishi-700 text-sm font-medium hover:translate-x-0.5 inline-block transition-transform">
+                    View Source Context →
+                </a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <nav class="mt-10 flex items-center justify-center space-x-1">
+        <!-- Previous -->
+        {% if page > 1 %}
+        <a href="/search?page={{ page - 1 }}&q={{ query or '' }}&crop={{ crop_filter or '' }}&category={{ category_filter or '' }}&season={{ season_filter or '' }}"
+            class="page-link bg-white border border-gray-200 text-gray-600 hover:bg-krishi-50 hover:border-krishi-300">
+            ‹
+        </a>
+        {% endif %}
+
+        <!-- Page Numbers -->
+        {% for p in range(1, total_pages + 1) %}
+            {% if p == page %}
+            <span class="page-link active">{{ p }}</span>
+            {% elif p <= 3 or p > total_pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <a href="/search?page={{ p }}&q={{ query or '' }}&crop={{ crop_filter or '' }}&category={{ category_filter or '' }}&season={{ season_filter or '' }}"
+                class="page-link bg-white border border-gray-200 text-gray-600 hover:bg-krishi-50 hover:border-krishi-300">
+                {{ p }}
+            </a>
+            {% elif p == 4 or p == total_pages - 2 %}
+            <span class="page-link text-gray-400">…</span>
+            {% endif %}
+        {% endfor %}
+
+        <!-- Next -->
+        {% if page < total_pages %}
+        <a href="/search?page={{ page + 1 }}&q={{ query or '' }}&crop={{ crop_filter or '' }}&category={{ category_filter or '' }}&season={{ season_filter or '' }}"
+            class="page-link bg-white border border-gray-200 text-gray-600 hover:bg-krishi-50 hover:border-krishi-300">
+            ›
+        </a>
+        {% endif %}
+    </nav>
+    {% endif %}
+
+    {% else %}
+    <!-- No Results -->
+    <div class="text-center py-16">
+        <div class="text-6xl mb-4">🔍</div>
+        <h3 class="text-xl font-bold text-gray-700 mb-2">No facts found</h3>
+        <p class="text-gray-500 mb-6">Try adjusting your search or filters</p>
+        <a href="/search" class="text-krishi-600 hover:text-krishi-700 font-medium">← Clear all filters</a>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
