@@ -1,7 +1,8 @@
 """
 SQLite database module for Krishi Khoj.
-Manages documents, extracted facts, and page texts with full CRUD operations.
-Uses WAL mode for concurrent reads and foreign keys for referential integrity.
+Manages documents, extracted facts, page texts, and users with full CRUD operations.
+Uses WAL mode for concurrent reads, foreign keys for referential integrity,
+and strict per-user ownership scoping.
 """
 import sqlite3
 import os
@@ -18,24 +19,46 @@ def get_db_connection():
 
 
 def init_db():
-    """Initialize database tables and indexes. Safe to call multiple times."""
+    """
+    Initialize database tables and indexes. Safe to call multiple times.
+    Applies incremental migration for user_id ownership on documents.
+    """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
 
-        # Create documents table
+        # Create users table for authentication
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+
+        # Create documents table (with user_id ownership column)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
                 filename TEXT NOT NULL,
                 file_hash TEXT NOT NULL,
                 version INTEGER DEFAULT 1,
                 upload_date TEXT NOT NULL,
                 page_count INTEGER DEFAULT 0,
                 file_path TEXT NOT NULL,
-                file_size INTEGER DEFAULT 0
+                file_size INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
+
+        # Migration check: Ensure user_id column exists on existing documents table
+        cursor.execute("PRAGMA table_info(documents)")
+        existing_cols = {row['name'] for row in cursor.fetchall()}
+        if 'user_id' not in existing_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN user_id INTEGER REFERENCES users(id)")
 
         # Create facts table
         cursor.execute("""
@@ -73,19 +96,81 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_season ON facts(season)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_document ON facts(document_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_page_texts_document ON page_texts(document_id, page_number)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id)")
+
+        # Seed MLH Judge demo account if not exists
+        cursor.execute("SELECT id FROM users WHERE username = 'mlh_judge'")
+        if not cursor.fetchone():
+            from werkzeug.security import generate_password_hash
+            from provenance import get_timestamp
+            cursor.execute(
+                """INSERT INTO users (username, password_hash, created_at)
+                   VALUES (?, ?, ?)""",
+                ('mlh_judge', generate_password_hash('Judge@Krishi2024'), get_timestamp())
+            )
 
         conn.commit()
     finally:
         conn.close()
 
 
-def insert_document(filename, file_hash, page_count, file_path, file_size):
+def create_user(username: str, password_hash: str):
     """
-    Insert a new document record.
+    Create a new user record.
+    Returns user id on success, or None if username already exists.
+    """
+    from provenance import get_timestamp
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO users (username, password_hash, created_at)
+               VALUES (?, ?, ?)""",
+            (username.strip(), password_hash, get_timestamp())
+        )
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        # Username already exists or constraint violation
+        return None
+    finally:
+        conn.close()
 
-    If a document with the same file_hash already exists, returns the existing
-    record and marks it as a duplicate. If the same filename exists with a
-    different hash, the version number is incremented.
+
+def get_user_by_username(username: str):
+    """Fetch user by username (case-insensitive due to COLLATE NOCASE)."""
+    if not username:
+        return None
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE username = ?", (username.strip(),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_by_id(user_id: int):
+    """Fetch user by ID (excludes password_hash for safety)."""
+    if not user_id:
+        return None
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, username, created_at FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def insert_document(filename, file_hash, page_count, file_path, file_size, user_id: int):
+    """
+    Insert a new document record scoped to user_id.
+
+    Duplicate detection (same file_hash) and versioning are strictly per-user
+    so that one user uploading a document does not reveal or conflict with another user.
 
     Args:
         filename: Original filename of the uploaded PDF
@@ -93,6 +178,7 @@ def insert_document(filename, file_hash, page_count, file_path, file_size):
         page_count: Number of pages in the PDF
         file_path: Absolute path where the file is stored
         file_size: File size in bytes
+        user_id: The authenticated user's ID
 
     Returns:
         dict with keys: id, version, is_duplicate
@@ -101,8 +187,11 @@ def insert_document(filename, file_hash, page_count, file_path, file_size):
     try:
         cursor = conn.cursor()
 
-        # Check if exact same file already exists (same hash)
-        cursor.execute("SELECT id, version FROM documents WHERE file_hash = ?", (file_hash,))
+        # Check if exact same file already exists FOR THIS USER (same hash + same user)
+        cursor.execute(
+            "SELECT id, version FROM documents WHERE file_hash = ? AND user_id = ?",
+            (file_hash, user_id)
+        )
         existing = cursor.fetchone()
         if existing:
             return {
@@ -111,25 +200,25 @@ def insert_document(filename, file_hash, page_count, file_path, file_size):
                 'is_duplicate': True
             }
 
-        # Check if same filename exists with different hash (new version)
+        # Check if same filename exists for this user with different hash (new version)
         cursor.execute(
-            "SELECT MAX(version) as max_version FROM documents WHERE filename = ?",
-            (filename,)
+            "SELECT MAX(version) as max_version FROM documents WHERE filename = ? AND user_id = ?",
+            (filename, user_id)
         )
         row = cursor.fetchone()
         version = 1
         if row and row['max_version'] is not None:
             version = row['max_version'] + 1
 
-        # Insert new document
+        # Insert new document with user_id
         from provenance import get_timestamp
         upload_date = get_timestamp()
 
         cursor.execute(
             """INSERT INTO documents (filename, file_hash, version, upload_date,
-               page_count, file_path, file_size)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (filename, file_hash, version, upload_date, page_count, file_path, file_size)
+               page_count, file_path, file_size, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (filename, file_hash, version, upload_date, page_count, file_path, file_size, user_id)
         )
         conn.commit()
 
@@ -146,22 +235,6 @@ def insert_fact(document_id, crop_name, category, fact_text, value, unit,
                 season, region, page_number, original_text, extraction_date):
     """
     Insert a single extracted fact into the database.
-
-    Args:
-        document_id: Foreign key to documents table
-        crop_name: Detected crop name (may be None)
-        category: Fact category (Fertilizer, Seed, Irrigation, etc.)
-        fact_text: Cleaned/truncated fact text
-        value: Extracted numeric value (may be None)
-        unit: Unit of the value (may be None)
-        season: Detected season (may be None)
-        region: Detected region (may be None)
-        page_number: Source page number (1-indexed)
-        original_text: Original unmodified text from the PDF
-        extraction_date: ISO 8601 timestamp of extraction
-
-    Returns:
-        int: The id of the inserted fact
     """
     conn = get_db_connection()
     try:
@@ -182,11 +255,6 @@ def insert_fact(document_id, crop_name, category, fact_text, value, unit,
 def insert_page_text(document_id, page_number, page_text):
     """
     Insert the raw text of a page for source viewing and verification.
-
-    Args:
-        document_id: Foreign key to documents table
-        page_number: Page number (1-indexed)
-        page_text: Full extracted text from the page
     """
     conn = get_db_connection()
     try:
@@ -202,44 +270,27 @@ def insert_page_text(document_id, page_number, page_text):
 
 
 def search_facts(query=None, crop=None, category=None, season=None,
-                 region=None, document_id=None, page=1, per_page=20):
+                 region=None, document_id=None, page=1, per_page=20, user_id: int = None):
     """
-    Search facts with optional filters and pagination.
-
-    Args:
-        query: Free-text search (LIKE match on fact_text and original_text)
-        crop: Filter by crop name
-        category: Filter by category
-        season: Filter by season
-        region: Filter by region
-        document_id: Filter by document
-        page: Page number (1-indexed, default 1)
-        per_page: Results per page (default 20)
-
-    Returns:
-        dict with keys:
-        - facts: list of fact dicts (joined with document info)
-        - total: total matching count
-        - page: current page number
-        - per_page: results per page
-        - total_pages: total number of pages
+    Search facts strictly scoped to the authenticated user's documents.
     """
+    if user_id is None:
+        return {'facts': [], 'total': 0, 'page': 1, 'per_page': per_page, 'total_pages': 1}
+
     conn = get_db_connection()
     try:
-        # Build WHERE clause
-        conditions = []
-        params = []
+        # Build WHERE clause - enforce ownership on documents table
+        conditions = ["d.user_id = ?"]
+        params = [user_id]
 
         if query:
             query_clean = query.strip()
-            # If quoted, e.g. "yellow rust", do exact phrase match
             if (query_clean.startswith('"') and query_clean.endswith('"')) or (query_clean.startswith("'") and query_clean.endswith("'")):
                 exact = query_clean[1:-1].strip()
                 conditions.append("(f.fact_text LIKE ? OR f.original_text LIKE ? OR f.crop_name LIKE ? OR f.category LIKE ?)")
                 params.extend([f"%{exact}%", f"%{exact}%", f"%{exact}%", f"%{exact}%"])
             else:
                 tokens = [t for t in query_clean.split() if t]
-                # Each token must match at least one relevant field in the fact
                 for t in tokens:
                     conditions.append(
                         "(f.fact_text LIKE ? OR f.original_text LIKE ? OR f.crop_name LIKE ? OR f.category LIKE ? OR f.season LIKE ? OR f.region LIKE ?)"
@@ -263,9 +314,7 @@ def search_facts(query=None, crop=None, category=None, season=None,
             conditions.append("f.document_id = ?")
             params.append(document_id)
 
-        where_clause = ""
-        if conditions:
-            where_clause = "WHERE " + " AND ".join(conditions)
+        where_clause = "WHERE " + " AND ".join(conditions)
 
         # Count total matching facts
         count_sql = f"""
@@ -306,28 +355,26 @@ def search_facts(query=None, crop=None, category=None, season=None,
         conn.close()
 
 
-def get_fact_by_id(fact_id):
+def get_fact_by_id(fact_id: int, user_id: int = None):
     """
-    Get a single fact with its document info and the page text for context.
-
-    Args:
-        fact_id: The fact's primary key
-
-    Returns:
-        dict with fact data, document info, and page_text, or None if not found
+    Get a single fact with its document info and page text, enforcing ownership.
+    Returns None if fact does not exist or does not belong to user_id.
     """
+    if user_id is None:
+        return None
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
 
-        # Get fact with document info
+        # Get fact with document info, strictly scoped to user_id
         cursor.execute("""
             SELECT f.*, d.filename, d.file_hash, d.version as document_version,
-                   d.upload_date
+                   d.upload_date, d.user_id
             FROM facts f
             JOIN documents d ON f.document_id = d.id
-            WHERE f.id = ?
-        """, (fact_id,))
+            WHERE f.id = ? AND d.user_id = ?
+        """, (fact_id, user_id))
         row = cursor.fetchone()
         if not row:
             return None
@@ -347,23 +394,20 @@ def get_fact_by_id(fact_id):
         conn.close()
 
 
-def get_document_by_id(document_id):
+def get_document_by_id(document_id: int, user_id: int = None):
     """
-    Get document info with list of all its pages and fact count per page.
-
-    Args:
-        document_id: The document's primary key
-
-    Returns:
-        dict with document info, pages list, and per-page fact counts,
-        or None if not found
+    Get document info with list of its pages and fact counts, enforcing ownership.
+    Returns None if document does not exist or does not belong to user_id.
     """
+    if user_id is None:
+        return None
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
 
-        # Get document
-        cursor.execute("SELECT * FROM documents WHERE id = ?", (document_id,))
+        # Get document strictly scoped to user_id
+        cursor.execute("SELECT * FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id))
         doc_row = cursor.fetchone()
         if not doc_row:
             return None
@@ -394,13 +438,13 @@ def get_document_by_id(document_id):
         conn.close()
 
 
-def get_all_documents():
+def get_all_documents(user_id: int = None):
     """
-    List all documents with their fact counts.
+    List all documents belonging strictly to the authenticated user.
+    """
+    if user_id is None:
+        return []
 
-    Returns:
-        list of dicts, each with document info and fact_count
-    """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -408,28 +452,27 @@ def get_all_documents():
             SELECT d.*, COUNT(f.id) as fact_count
             FROM documents d
             LEFT JOIN facts f ON d.id = f.document_id
+            WHERE d.user_id = ?
             GROUP BY d.id
             ORDER BY d.upload_date DESC
-        """)
+        """, (user_id,))
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
 
-def get_page_text(document_id, page_number):
+def get_page_text(document_id: int, page_number: int, user_id: int = None):
     """
-    Get the raw text of a specific page.
-
-    Args:
-        document_id: The document's primary key
-        page_number: Page number (1-indexed)
-
-    Returns:
-        str: The page text, or empty string if not found
+    Get raw text of a specific page, verifying document ownership if user_id is provided.
     """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+        if user_id is not None:
+            cursor.execute("SELECT id FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id))
+            if not cursor.fetchone():
+                return ''
+
         cursor.execute(
             "SELECT page_text FROM page_texts WHERE document_id = ? AND page_number = ?",
             (document_id, page_number)
@@ -440,30 +483,42 @@ def get_page_text(document_id, page_number):
         conn.close()
 
 
-def get_stats():
+def get_stats(user_id: int = None):
     """
-    Get overall statistics for the Krishi Khoj database.
+    Get statistics scoped strictly to the authenticated user's documents.
+    """
+    if user_id is None:
+        return {
+            'total_documents': 0,
+            'total_facts': 0,
+            'total_pages': 0,
+            'categories': [],
+            'crops': [],
+            'seasons': [],
+        }
 
-    Returns:
-        dict with keys: total_documents, total_facts, total_pages,
-        categories (list), crops (list), seasons (list)
-    """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*) as c FROM documents")
+        cursor.execute("SELECT COUNT(*) as c FROM documents WHERE user_id = ?", (user_id,))
         total_documents = cursor.fetchone()['c']
 
-        cursor.execute("SELECT COUNT(*) as c FROM facts")
+        cursor.execute(
+            "SELECT COUNT(*) as c FROM facts f JOIN documents d ON f.document_id = d.id WHERE d.user_id = ?",
+            (user_id,)
+        )
         total_facts = cursor.fetchone()['c']
 
-        cursor.execute("SELECT COUNT(*) as c FROM page_texts")
+        cursor.execute(
+            "SELECT COUNT(*) as c FROM page_texts pt JOIN documents d ON pt.document_id = d.id WHERE d.user_id = ?",
+            (user_id,)
+        )
         total_pages = cursor.fetchone()['c']
 
-        categories = get_distinct_values('category')
-        crops = get_distinct_values('crop_name')
-        seasons = get_distinct_values('season')
+        categories = get_distinct_values('category', user_id=user_id)
+        crops = get_distinct_values('crop_name', user_id=user_id)
+        seasons = get_distinct_values('season', user_id=user_id)
 
         return {
             'total_documents': total_documents,
@@ -477,67 +532,70 @@ def get_stats():
         conn.close()
 
 
-def get_distinct_values(column):
+def get_distinct_values(column: str, user_id: int = None):
     """
-    Get distinct non-null values for a given column from the facts table.
-
-    Args:
-        column: Column name (must be one of the allowed columns)
-
-    Returns:
-        list of distinct string values, sorted alphabetically
+    Get distinct non-null values for a column, scoped strictly to the authenticated user.
     """
     allowed_columns = {'crop_name', 'category', 'season', 'region', 'unit'}
     if column not in allowed_columns:
         raise ValueError(f"Column '{column}' not allowed. Must be one of {allowed_columns}")
 
+    if user_id is None:
+        return []
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            f"SELECT DISTINCT {column} FROM facts WHERE {column} IS NOT NULL ORDER BY {column}"
+            f"""SELECT DISTINCT f.{column}
+                FROM facts f
+                JOIN documents d ON f.document_id = d.id
+                WHERE f.{column} IS NOT NULL AND d.user_id = ?
+                ORDER BY f.{column}""",
+            (user_id,)
         )
         return [row[0] for row in cursor.fetchall()]
     finally:
         conn.close()
 
 
-def delete_document(document_id):
+def delete_document(document_id: int, user_id: int = None):
     """
-    Delete a document and all its associated facts and page texts.
-
-    Relies on ON DELETE CASCADE for related records.
-
-    Args:
-        document_id: The document's primary key
-
-    Returns:
-        bool: True if a document was deleted, False if not found
+    Delete a document and all its associated facts and page texts, strictly enforcing ownership.
+    Returns (True, file_path) if deleted, or (False, None) if not found or unauthorized.
     """
+    if user_id is None:
+        return False, None
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        # Find document owned by user_id
+        cursor.execute("SELECT id, file_path FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id))
+        row = cursor.fetchone()
+        if not row:
+            return False, None
+
+        file_path = row['file_path']
+        cursor.execute("DELETE FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id))
         conn.commit()
-        return cursor.rowcount > 0
+        return True, file_path
     finally:
         conn.close()
 
 
-def get_document_facts(document_id, category=None, page_number=None):
+def get_document_facts(document_id: int, category=None, page_number=None, user_id: int = None):
     """
-    Get all facts for a document, optionally filtered by category or page.
-
-    Args:
-        document_id: The document's primary key
-        category: Optional category filter
-        page_number: Optional page number filter
-
-    Returns:
-        list of fact dicts
+    Get facts for a document, enforcing ownership if user_id is provided.
     """
     conn = get_db_connection()
     try:
+        cursor = conn.cursor()
+        if user_id is not None:
+            cursor.execute("SELECT id FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id))
+            if not cursor.fetchone():
+                return []
+
         conditions = ["document_id = ?"]
         params = [document_id]
 
@@ -549,7 +607,6 @@ def get_document_facts(document_id, category=None, page_number=None):
             params.append(page_number)
 
         where_clause = " AND ".join(conditions)
-        cursor = conn.cursor()
         cursor.execute(
             f"SELECT * FROM facts WHERE {where_clause} ORDER BY page_number, id",
             params
@@ -559,22 +616,15 @@ def get_document_facts(document_id, category=None, page_number=None):
         conn.close()
 
 
-def get_search_autocomplete(query: str, limit: int = 8) -> list:
+def get_search_autocomplete(query: str, user_id: int = None, limit: int = 8) -> list:
     """
-    Generate autocomplete suggestions for search queries.
-    Supports single-word prefix completion (e.g. 'wh' -> 'Wheat') as well as
-    multi-word recommendations (e.g. 'wheat fer' -> 'Wheat Fertilizer').
-    
-    Args:
-        query: Search string typed by the user
-        limit: Maximum suggestions to return (default 8)
-        
-    Returns:
-        List of suggested search phrases
+    Generate autocomplete suggestions scoped strictly to the authenticated user.
+    Standard agronomic catalog keywords are suggested, but database-derived suggestions
+    only query the user's private documents.
     """
     import re
-    
-    if not query or not query.strip():
+
+    if not query or not query.strip() or user_id is None:
         return []
 
     raw_tokens = [w.strip() for w in query.split() if w.strip()]
@@ -583,7 +633,7 @@ def get_search_autocomplete(query: str, limit: int = 8) -> list:
 
     tokens = [t.lower() for t in raw_tokens]
     query_lower = query.strip().lower()
-    
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -597,130 +647,131 @@ def get_search_autocomplete(query: str, limit: int = 8) -> list:
         def add_suggestion(phrase, score=0):
             if not phrase:
                 return
-            # Remove leading symbols/numbers/bullets
             clean = re.sub(r'^[•\-\*\d\.\:\s]+', '', phrase).strip()
             clean = re.sub(r'\s+', ' ', clean)
             clean = re.sub(r'[,;:\.\-]+$', '', clean).strip()
-            
+
             words = clean.split()
-            # Strip leading and trailing stopwords
             while words and words[0].lower() in stopwords:
                 words.pop(0)
             while words and words[-1].lower() in stopwords:
                 words.pop()
-                
+
             if not words or len(words) > 7:
                 return
-                
+
             clean = ' '.join(words)
             if len(clean) < 3 or len(clean) > 55:
                 return
             if clean.lower() == query_lower and len(words) == 1:
                 return
-                
+
             title = ' '.join(w.capitalize() if not (w.isupper() and len(w) > 1) else w for w in words)
             key = title.lower()
             if key not in seen:
                 seen.add(key)
-                # Significant bonus for prefix match
                 if key.startswith(query_lower):
                     score += 150
                 elif query_lower in key:
                     score += 50
                 suggestions.append((score, title))
 
-        # Core curated agricultural entities for instant accurate suggestions
+        # Core standard agricultural entities for instant accurate suggestions
         agri_catalog = [
-            # Cereals & Pulses & Commercial Crops
             'Wheat', 'Rice', 'Paddy', 'Maize', 'Bajra', 'Jowar', 'Barley', 'Ragi',
             'Gram', 'Chickpea', 'Moong', 'Urad', 'Arhar', 'Pigeon Pea', 'Lentil', 'Pea',
             'Mustard', 'Groundnut', 'Soybean', 'Sunflower', 'Sesame',
             'Cotton', 'Sugarcane', 'Jute', 'Tobacco', 'Tea', 'Coffee',
             'Potato', 'Tomato', 'Onion', 'Okra', 'Brinjal', 'Cauliflower', 'Carrot',
-            # Categories & Core Topics
             'Fertilizer', 'Fertilizer Dose', 'Fertilizer Management',
             'Irrigation', 'Irrigation Stages', 'Water Management',
             'Pest Control', 'Pest Management', 'Disease Management',
             'Seed Rate', 'Seed Treatment', 'Varieties',
             'Soil Preparation', 'Soil pH Range', 'Expected Yield', 'Sowing Time',
-            # Chemicals & Inputs
             'Urea', 'DAP', 'MOP', 'NPK Ratio', 'Zinc Sulphate', 'Nitrogen Dose',
             'FYM', 'Compost', 'Vermicompost', 'Propiconazole', 'Imidacloprid',
-            'Carbendazim', 'Chlorpyrifos', 'Cartap Hydrochloride', 'Tricyclazole', 'Hexaconazole',
-            # Major Pests & Diseases
             'Yellow Rust', 'Leaf Rust', 'Karnal Bunt', 'Loose Smut',
             'Stem Borer', 'Blast Disease', 'Sheath Blight', 'Brown Plant Hopper',
-            'Aphids', 'Termites',
-            # Varieties
-            'HD-2967', 'PBW-343', 'DBW-17', 'WH-1105', 'Pusa Basmati 1121', 'Pusa-44', 'PR-126', 'Swarna',
-            # Seasons & Agronomic Practices
-            'Rabi Season', 'Kharif Season', 'Zaid Season',
-            'Crown Root Initiation (CRI)', 'System of Rice Intensification (SRI)',
-            'Alternate Wetting and Drying (AWD)', 'Laser Leveling', 'Zero Tillage'
+            'Rabi Season', 'Kharif Season', 'Zaid Season'
         ]
 
-        # ── Case A: Single-word / Prefix search (e.g. 'wh', 'ri', 'fe') ──────
+        # ── Case A: Single-word / Prefix search ──────────────────────────────
         if len(raw_tokens) == 1:
             prefix = raw_tokens[0].lower()
-            
-            # 1. Match from catalog
+
             for item in agri_catalog:
                 if item.lower().startswith(prefix):
                     add_suggestion(item, score=120)
                 elif prefix in item.lower():
                     add_suggestion(item, score=30)
 
-            # 2. Match from Database distinct crops
-            cursor.execute("SELECT DISTINCT crop_name FROM facts WHERE LOWER(crop_name) LIKE ? LIMIT 10", (f"{prefix}%",))
+            # Match from user's distinct crops in DB
+            cursor.execute(
+                """SELECT DISTINCT f.crop_name
+                   FROM facts f JOIN documents d ON f.document_id = d.id
+                   WHERE LOWER(f.crop_name) LIKE ? AND d.user_id = ?
+                   LIMIT 10""",
+                (f"{prefix}%", user_id)
+            )
             for row in cursor.fetchall():
                 crop = row['crop_name']
                 if crop:
                     add_suggestion(crop, score=140)
-                    for topic in ['Fertilizer', 'Varieties', 'Irrigation', 'Seed Rate', 'Yellow Rust', 'Expected Yield']:
+                    for topic in ['Fertilizer', 'Varieties', 'Irrigation', 'Seed Rate']:
                         add_suggestion(f"{crop} {topic}", score=80)
 
-            # 3. Match from Database distinct categories
-            cursor.execute("SELECT DISTINCT category FROM facts WHERE LOWER(category) LIKE ? LIMIT 10", (f"{prefix}%",))
+            # Match from user's distinct categories in DB
+            cursor.execute(
+                """SELECT DISTINCT f.category
+                   FROM facts f JOIN documents d ON f.document_id = d.id
+                   WHERE LOWER(f.category) LIKE ? AND d.user_id = ?
+                   LIMIT 10""",
+                (f"{prefix}%", user_id)
+            )
             for row in cursor.fetchall():
                 cat = row['category']
                 if cat:
                     add_suggestion(cat, score=110)
 
-            # 4. Search distinct matching words from fact_text in DB
-            cursor.execute("SELECT fact_text FROM facts WHERE LOWER(fact_text) LIKE ? LIMIT 30", (f"%{prefix}%",))
+            # Search distinct matching words from user's facts in DB
+            cursor.execute(
+                """SELECT f.fact_text
+                   FROM facts f JOIN documents d ON f.document_id = d.id
+                   WHERE LOWER(f.fact_text) LIKE ? AND d.user_id = ?
+                   LIMIT 30""",
+                (f"%{prefix}%", user_id)
+            )
             for row in cursor.fetchall():
                 words = re.sub(r'[^\w\s-]', ' ', row['fact_text']).split()
                 for i, w in enumerate(words):
                     if w.lower().startswith(prefix) and len(w) > len(prefix):
-                        # Single word or 2-word phrase
                         add_suggestion(w, score=70)
                         if i + 1 < len(words):
                             add_suggestion(f"{w} {words[i+1]}", score=60)
 
-        # ── Case B: Multi-word search (e.g. 'wheat fer', 'yellow rust') ────────
+        # ── Case B: Multi-word search ────────────────────────────────────────
         else:
             clauses = []
             params = []
             for t in tokens:
                 clauses.append("(f.fact_text LIKE ? OR f.crop_name LIKE ? OR f.category LIKE ? OR f.original_text LIKE ?)")
                 params.extend([f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%"])
-            
+
             sql = f"""
                 SELECT DISTINCT f.crop_name, f.category, f.fact_text, f.season, f.region
                 FROM facts f
-                WHERE {' AND '.join(clauses)}
+                JOIN documents d ON f.document_id = d.id
+                WHERE {' AND '.join(clauses)} AND d.user_id = ?
                 LIMIT 80
             """
-            cursor.execute(sql, params)
+            cursor.execute(sql, params + [user_id])
             rows = cursor.fetchall()
 
-            # 1. Catalog multi-word matches
             for item in agri_catalog:
                 item_lower = item.lower()
                 if all(t in item_lower for t in tokens):
                     add_suggestion(item, score=110)
 
-            # 2. Crop + Category / Season combinations
             for row in rows:
                 crop = row['crop_name']
                 cat = row['category']
@@ -734,60 +785,7 @@ def get_search_autocomplete(query: str, limit: int = 8) -> list:
                     if all(t in combo.lower() for t in tokens):
                         add_suggestion(combo, score=90)
 
-            # 3. Key agricultural topics + Crop
-            common_topics = [
-                'Fertilizer Management', 'Fertilizer Dose', 'Seed Rate', 'Seed Treatment',
-                'Irrigation Stages', 'Water Management', 'Pest Control', 'Disease Management',
-                'Varieties', 'Soil Preparation', 'Expected Yield', 'Sowing Time',
-                'Yellow Rust', 'Leaf Rust', 'Karnal Bunt', 'Stem Borer', 'Blast',
-                'Sheath Blight', 'Aphids', 'Termites', 'Brown Plant Hopper'
-            ]
-            for row in rows:
-                crop = row['crop_name']
-                if crop:
-                    for topic in common_topics:
-                        combo = f"{crop} {topic}"
-                        if all(t in combo.lower() for t in tokens):
-                            add_suggestion(combo, score=85)
-
-            # 4. Meaningful clauses in fact_text
-            for row in rows:
-                crop = row['crop_name'] or ''
-                text = row['fact_text']
-                crop_lower = crop.lower()
-                sub_tokens = [t for t in tokens if t != crop_lower]
-                
-                clauses_in_text = re.split(r'[,;:\.\(\)]', text)
-                for clause in clauses_in_text:
-                    clause = clause.strip()
-                    c_lower = clause.lower()
-                    if all(t in c_lower for t in tokens):
-                        add_suggestion(clause, score=80)
-                    elif sub_tokens and all(t in c_lower for t in sub_tokens):
-                        add_suggestion(f"{crop} {clause}", score=75)
-
-            # 5. Sliding window n-grams
-            for row in rows:
-                crop = row['crop_name'] or ''
-                text = row['fact_text']
-                clean_text = re.sub(r'[^\w\s-]', ' ', text)
-                words = clean_text.split()
-                crop_lower = crop.lower()
-                sub_tokens = [t for t in tokens if t != crop_lower]
-
-                for i in range(len(words)):
-                    for length in (3, 4, 5):
-                        if i + length <= len(words):
-                            window = words[i:i + length]
-                            w_lower = [w.lower() for w in window]
-                            if all(any(t in w for w in w_lower) for t in tokens):
-                                add_suggestion(' '.join(window), score=50)
-                            elif sub_tokens and all(any(t in w for w in w_lower) for t in sub_tokens):
-                                add_suggestion(f"{crop} {' '.join(window)}", score=45)
-
-        # Sort by score descending, then length ascending
         suggestions.sort(key=lambda x: (-x[0], len(x[1])))
         return [s[1] for s in suggestions[:limit]]
     finally:
         conn.close()
-

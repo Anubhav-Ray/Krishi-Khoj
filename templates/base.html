@@ -44,11 +44,24 @@
                     </a>
                     <span class="hidden sm:inline text-krishi-200 text-xs font-medium bg-krishi-800/50 px-2 py-0.5 rounded-full">Farm PDF → Searchable Data</span>
                 </div>
-                <!-- Nav Links -->
-                <div class="flex items-center space-x-1">
+                <!-- Nav Links & Auth -->
+                <div class="flex items-center space-x-2">
                     <a href="/" class="text-white/90 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg text-sm font-medium transition-colors">Home</a>
                     <a href="/search" class="text-white/90 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg text-sm font-medium transition-colors">Search</a>
                     <a href="/documents" class="text-white/90 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg text-sm font-medium transition-colors">Documents</a>
+
+                    <div class="h-5 w-px bg-white/20 mx-1"></div>
+
+                    {% if current_user %}
+                    <span class="inline-flex items-center space-x-1.5 bg-krishi-900/60 text-krishi-100 px-3 py-1.5 rounded-lg text-xs font-medium border border-krishi-600/40">
+                        <span>👨‍🌾</span>
+                        <span class="font-semibold">{{ current_user.username }}</span>
+                    </span>
+                    <a href="/logout" class="text-white/80 hover:text-white hover:bg-white/10 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors">Logout</a>
+                    {% else %}
+                    <a href="/login" class="text-white/90 hover:text-white hover:bg-white/10 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">Sign In</a>
+                    <a href="/register" class="bg-saffron-500 hover:bg-saffron-600 text-gray-900 font-semibold px-3 py-1.5 rounded-lg text-sm transition-colors shadow-sm">Register</a>
+                    {% endif %}
                 </div>
             </div>
         </div>

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Not Found — Krishi Khoj{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto px-4 py-16 text-center">
+    <div class="text-6xl mb-4">🔍</div>
+    <h1 class="text-2xl font-bold text-gray-900 mb-2">Resource Not Found</h1>
+    <p class="text-sm text-gray-600 mb-6">
+        The requested document, fact, or page does not exist or is not available.
+    </p>
+    <div class="space-x-3">
+        <a href="{{ url_for('index') }}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-krishi-700 hover:bg-krishi-800 transition-colors">
+            Return Home
+        </a>
+        <a href="{{ url_for('search_page') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors">
+            Search Facts
+        </a>
+    </div>
+</div>
+{% endblock %}
