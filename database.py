@@ -23,6 +23,17 @@ def init_db():
     try:
         cursor = conn.cursor()
 
+        # Create users table for authentication
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+
         # Create documents table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS documents (
@@ -75,6 +86,57 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_page_texts_document ON page_texts(document_id, page_number)")
 
         conn.commit()
+    finally:
+        conn.close()
+
+
+def create_user(username: str, password_hash: str):
+    """
+    Create a new user record.
+    Returns user id on success, or None if username already exists.
+    """
+    from provenance import get_timestamp
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO users (username, password_hash, created_at)
+               VALUES (?, ?, ?)""",
+            (username.strip(), password_hash, get_timestamp())
+        )
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        # Username already exists or constraint violation
+        return None
+    finally:
+        conn.close()
+
+
+def get_user_by_username(username: str):
+    """Fetch user by username (case-insensitive due to COLLATE NOCASE)."""
+    if not username:
+        return None
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE username = ?", (username.strip(),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_by_id(user_id: int):
+    """Fetch user by ID (excludes password_hash for safety)."""
+    if not user_id:
+        return None
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, username, created_at FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 

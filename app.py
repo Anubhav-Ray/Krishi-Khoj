@@ -9,21 +9,26 @@ import os
 import csv
 import json
 import io
+import re
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    flash, jsonify, send_file, Response
+    flash, jsonify, send_file, Response, session
 )
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from config import (
     UPLOAD_FOLDER, DATABASE_PATH, MAX_CONTENT_LENGTH,
-    ALLOWED_EXTENSIONS, SECRET_KEY, DEBUG
+    ALLOWED_EXTENSIONS, SECRET_KEY, DEBUG,
+    SESSION_COOKIE_HTTPONLY, SESSION_COOKIE_SAMESITE,
+    SESSION_COOKIE_SECURE, PERMANENT_SESSION_LIFETIME
 )
 from database import (
     init_db, insert_document, insert_fact, insert_page_text,
     search_facts, get_fact_by_id, get_document_by_id,
     get_all_documents, get_page_text, get_stats,
     get_distinct_values, delete_document, get_document_facts,
-    get_search_autocomplete
+    get_search_autocomplete,
+    create_user, get_user_by_username, get_user_by_id
 )
 from pdf_processor import PDFProcessor
 from fact_extractor import extract_facts_from_document, get_extraction_summary
@@ -35,6 +40,10 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['SESSION_COOKIE_HTTPONLY'] = SESSION_COOKIE_HTTPONLY
+app.config['SESSION_COOKIE_SAMESITE'] = SESSION_COOKIE_SAMESITE
+app.config['SESSION_COOKIE_SECURE'] = SESSION_COOKIE_SECURE
+app.config['PERMANENT_SESSION_LIFETIME'] = PERMANENT_SESSION_LIFETIME
 
 # Ensure directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -58,7 +67,17 @@ def format_file_size(size_bytes):
         return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
-# ─── Template Filters ────────────────────────────────────────────────────────
+# ─── Template Context & Filters ───────────────────────────────────────────────
+
+@app.context_processor
+def inject_current_user():
+    """Inject safe current_user into templates without exposing credentials."""
+    user_id = session.get('user_id')
+    username = session.get('username')
+    if user_id and username:
+        return {'current_user': {'id': user_id, 'username': username}}
+    return {'current_user': None}
+
 
 @app.template_filter('filesize')
 def filesize_filter(size_bytes):
@@ -72,6 +91,104 @@ def truncate_hash_filter(hash_str, length=8):
     if hash_str and len(hash_str) > length:
         return hash_str[:length] + '...'
     return hash_str
+
+
+# ─── Routes: Authentication ───────────────────────────────────────────────────
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Register a new farmer account."""
+    if session.get('user_id'):
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        confirm_password = request.form.get('confirm_password', '')
+
+        # Input validation
+        if not username:
+            flash('Username is required.', 'error')
+            return render_template('register.html', username=username)
+
+        if len(username) < 3 or len(username) > 30:
+            flash('Username must be between 3 and 30 characters.', 'error')
+            return render_template('register.html', username=username)
+
+        if not re.match(r'^[a-zA-Z0-9_-]+$', username):
+            flash('Username may only contain letters, numbers, underscores, and hyphens.', 'error')
+            return render_template('register.html', username=username)
+
+        if not password:
+            flash('Password is required.', 'error')
+            return render_template('register.html', username=username)
+
+        if len(password) < 6:
+            flash('Password must be at least 6 characters long.', 'error')
+            return render_template('register.html', username=username)
+
+        if password != confirm_password:
+            flash('Passwords do not match. Please verify your password.', 'error')
+            return render_template('register.html', username=username)
+
+        # Hash password and create user safely
+        password_hash = generate_password_hash(password)
+        user_id = create_user(username, password_hash)
+
+        if not user_id:
+            flash('That username is already taken. Please choose another username.', 'error')
+            return render_template('register.html', username=username)
+
+        # Successful registration - establish session
+        session.clear()
+        session['user_id'] = user_id
+        session['username'] = username
+        flash('Account created successfully! Welcome to Krishi Khoj.', 'success')
+        return redirect(url_for('index'))
+
+    return render_template('register.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Log in with an existing farmer account."""
+    if session.get('user_id'):
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+
+        if not username or not password:
+            flash('Please enter both username and password.', 'error')
+            return render_template('login.html', username=username)
+
+        user = get_user_by_username(username)
+        # Check credentials without leaking whether username exists
+        if not user or not check_password_hash(user['password_hash'], password):
+            flash('Invalid username or password. Please try again.', 'error')
+            return render_template('login.html', username=username)
+
+        # Successful login
+        session.clear()
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        flash(f'Welcome back, {user["username"]}!', 'success')
+
+        next_url = request.args.get('next')
+        if next_url and next_url.startswith('/') and not next_url.startswith('//'):
+            return redirect(next_url)
+        return redirect(url_for('index'))
+
+    return render_template('login.html')
+
+
+@app.route('/logout', methods=['GET', 'POST'])
+def logout():
+    """Log out the current user."""
+    session.clear()
+    flash('You have been logged out.', 'info')
+    return redirect(url_for('login'))
 
 
 # ─── Routes: Pages ───────────────────────────────────────────────────────────
@@ -402,4 +519,3 @@ if __name__ == '__main__':
     print("=" * 55)
     print()
     app.run(debug=DEBUG, host='127.0.0.1', port=5000)
-

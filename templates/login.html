@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In — Krishi Khoj{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto px-4 py-12">
+    <!-- Header -->
+    <div class="text-center mb-8">
+        <span class="text-4xl">🌾</span>
+        <h1 class="text-2xl font-bold text-gray-900 mt-2">Sign In to Krishi Khoj</h1>
+        <p class="text-sm text-gray-600 mt-1">
+            Access your agricultural documents, facts, and provenance archives.
+        </p>
+    </div>
+
+    <!-- Login Card -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sm:p-8">
+        <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}" class="space-y-5">
+            <!-- Username -->
+            <div>
+                <label for="username" class="block text-sm font-semibold text-gray-700 mb-1">
+                    Username
+                </label>
+                <input type="text"
+                       id="username"
+                       name="username"
+                       value="{{ username or '' }}"
+                       required
+                       autofocus
+                       placeholder="e.g. farmer_ramesh"
+                       class="w-full px-3.5 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-krishi-500 focus:border-krishi-500 text-sm text-gray-900 transition-colors placeholder:text-gray-400">
+            </div>
+
+            <!-- Password -->
+            <div>
+                <label for="password" class="block text-sm font-semibold text-gray-700 mb-1">
+                    Password
+                </label>
+                <input type="password"
+                       id="password"
+                       name="password"
+                       required
+                       placeholder="••••••••"
+                       class="w-full px-3.5 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-krishi-500 focus:border-krishi-500 text-sm text-gray-900 transition-colors placeholder:text-gray-400">
+            </div>
+
+            <!-- Submit Button -->
+            <button type="submit"
+                    class="w-full bg-krishi-700 hover:bg-krishi-800 text-white font-semibold py-2.5 px-4 rounded-lg text-sm shadow transition-colors flex items-center justify-center space-x-2">
+                <span>Sign In</span>
+                <span>&rarr;</span>
+            </button>
+        </form>
+
+        <!-- Divider -->
+        <div class="mt-6 pt-6 border-t border-gray-200 text-center">
+            <p class="text-sm text-gray-600">
+                New to Krishi Khoj?
+                <a href="{{ url_for('register') }}" class="text-krishi-700 hover:text-krishi-800 font-semibold ml-1">
+                    Register an account
+                </a>
+            </p>
+        </div>
+    </div>
+
+    <!-- Product Principle Notice -->
+    <div class="mt-6 text-center text-xs text-gray-500">
+        <p>🌾 Official farming advice is extracted deterministically without generation.</p>
+        <p class="mt-0.5">Anchored permanently to source documents with cryptographic hashes.</p>
+    </div>
+</div>
+{% endblock %}
